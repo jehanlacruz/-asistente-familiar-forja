@@ -20,6 +20,18 @@ export interface FamilyMember {
   fitness_level: string | null;
   time_available: string | null;
   injuries: string | null;
+  interests: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface FamilyActivity {
+  id: string;
+  title: string;
+  description: string | null;
+  kind: string;
+  for_member: string | null;
+  is_favorite: number;
   created_at: number;
   updated_at: number;
 }

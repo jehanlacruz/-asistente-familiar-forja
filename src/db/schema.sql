@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS family_members (
   fitness_level TEXT,
   time_available TEXT,
   injuries TEXT,
+  interests TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -435,3 +436,17 @@ CREATE TABLE IF NOT EXISTS exercise_plan (
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE
 );
+
+-- Ideas de actividades familiares. is_favorite=1 = "ya la probamos y funcionó".
+CREATE TABLE IF NOT EXISTS family_activities (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  kind TEXT NOT NULL DEFAULT 'casa',
+  for_member TEXT,
+  is_favorite INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (for_member) REFERENCES family_members(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activities_fav ON family_activities(is_favorite);

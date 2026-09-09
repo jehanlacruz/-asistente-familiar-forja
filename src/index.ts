@@ -33,6 +33,9 @@ import {
   renderRecordatoriosPage,
   renderFinanzasPage,
   renderNinosPage,
+  addActivityFromForm,
+  toggleActivityFavorite,
+  deleteActivity,
   addReminderFromForm,
   cancelReminder,
   renderEditMemberPage,
@@ -637,7 +640,19 @@ app.post("/familia/recordatorio/:id/borrar", async (c) => {
   return c.body(null, 204);
 });
 app.get("/familia/finanzas", (c) => c.html(renderFinanzasPage(c.env)));
-app.get("/familia/ninos", (c) => c.html(renderNinosPage(c.env)));
+app.get("/familia/ninos", async (c) => c.html(await renderNinosPage(c.env)));
+app.post("/familia/actividad", async (c) => {
+  await addActivityFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/ninos");
+});
+app.post("/familia/actividad/:id/favorita", async (c) => {
+  await toggleActivityFavorite(c.env, c.req.param("id"));
+  return c.body(null, 204);
+});
+app.post("/familia/actividad/:id/borrar", async (c) => {
+  await deleteActivity(c.env, c.req.param("id"));
+  return c.body(null, 204);
+});
 app.post("/familia/tarea/:id/toggle", async (c) => {
   await toggleChore(c.env, c.req.param("id"));
   return c.body(null, 204);

@@ -23,6 +23,7 @@ import {
   type FamilyMember,
   type Chore,
   type Reminder,
+  type FamilyActivity,
 } from "./family-lib";
 import type { Env } from "../src/env";
 
@@ -101,8 +102,8 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
   const now = Date.now();
   await d.run(
     `INSERT INTO family_members
-      (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, fitness_level, time_available, injuries, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newId(),
       nombre,
@@ -119,6 +120,7 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
       form.nivelFisico || null,
       form.tiempoDisponible || null,
       form.lesiones || null,
+      form.intereses || null,
       now,
       now,
     ],
@@ -131,7 +133,7 @@ export async function updateMemberFromForm(env: Env, id: string, form: Record<st
     `UPDATE family_members SET
       name = ?, role = ?, access_level = ?, birthdate = ?, weight_kg = ?, height_cm = ?,
       clothing_size = ?, nationality = ?, food_preferences = ?, allergies = ?, nutrition_goal = ?,
-      fitness_level = ?, time_available = ?, injuries = ?, updated_at = ?
+      fitness_level = ?, time_available = ?, injuries = ?, interests = ?, updated_at = ?
      WHERE id = ?`,
     [
       (form.nombre || "").trim(),
@@ -148,10 +150,39 @@ export async function updateMemberFromForm(env: Env, id: string, form: Record<st
       form.nivelFisico || null,
       form.tiempoDisponible || null,
       form.lesiones || null,
+      form.intereses || null,
       Date.now(),
       id,
     ],
   );
+}
+
+export async function addActivityFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const titulo = (form.titulo || "").trim();
+  if (!titulo) return;
+  const d = db(env);
+  let forId: string | null = null;
+  if (form.paraQuien) {
+    const m = await findMemberByName(d, form.paraQuien);
+    forId = m?.id ?? null;
+  }
+  const now = Date.now();
+  await d.run(
+    `INSERT INTO family_activities (id, title, description, kind, for_member, is_favorite, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+    [newId(), titulo, form.descripcion || null, form.tipo || "casa", forId, now, now],
+  );
+}
+
+export async function toggleActivityFavorite(env: Env, id: string): Promise<void> {
+  const d = db(env);
+  const row = await d.first<{ is_favorite: number }>("SELECT is_favorite FROM family_activities WHERE id = ?", [id]);
+  if (!row) return;
+  await d.run("UPDATE family_activities SET is_favorite = ?, updated_at = ? WHERE id = ?", [row.is_favorite ? 0 : 1, Date.now(), id]);
+}
+
+export async function deleteActivity(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM family_activities WHERE id = ?", [id]);
 }
 
 export async function deleteMember(env: Env, id: string): Promise<void> {
@@ -280,6 +311,7 @@ function memberCard(m: FamilyMember): string {
   if (m.nutrition_goal) rows.push(`<div class="row"><span>Objetivo</span><b>${esc(GOAL_LABEL[m.nutrition_goal] ?? m.nutrition_goal)}</b></div>`);
   if (m.fitness_level) rows.push(`<div class="row"><span>Nivel físico</span><b>${esc(FITNESS_LABEL[m.fitness_level] ?? m.fitness_level)}</b></div>`);
   if (m.injuries) rows.push(`<div class="row"><span>Lesiones</span><b>${esc(m.injuries)}</b></div>`);
+  if (m.interests) rows.push(`<div class="row"><span>Intereses</span><b>${esc(m.interests)}</b></div>`);
   const badge =
     m.access_level === "full"
       ? m.telegram_chat_id
@@ -414,6 +446,7 @@ export async function renderIntegrantesPage(env: Env): Promise<string> {
         <select name="nivelFisico">${fitnessOptions(null)}</select>
         <input type="text" name="tiempoDisponible" placeholder="Tiempo disponible (ej. 3x/sem 30min)">
         <input type="text" name="lesiones" placeholder="Lesiones / limitaciones">
+        <input type="text" name="intereses" placeholder="Intereses / gustos (útil en niños)">
         <button type="submit">Guardar integrante</button>
       </form>
     </details>`;
@@ -631,12 +664,59 @@ export function renderFinanzasPage(env: Env): string {
   ]);
 }
 
-export function renderNinosPage(env: Env): string {
-  return comingSoonPage(env, "ninos", "🧸", "Niños y actividades familiares", "Sugerencias de actividades para Aday y Adiel según su edad e intereses, en casa o al aire libre.", [
-    "Cuestionario de edades e intereses de cada niño",
-    "Sugerencias de actividades para hacer en casa, al aire libre o el fin de semana",
-    "Guardar las actividades que ya funcionaron para repetirlas",
-  ]);
+const KIND_LABEL: Record<string, string> = { casa: "🏠 En casa", aire_libre: "🌳 Al aire libre", fin_semana: "🎉 Fin de semana" };
+
+function activityItem(a: FamilyActivity, memberName: string | null): string {
+  return `<li class="${a.is_favorite ? "done" : ""}">
+    <label>
+      <input type="checkbox" data-toggle="/familia/actividad/${a.id}/favorita" ${a.is_favorite ? "checked" : ""}>
+      <span class="txt">${esc(a.title)}${a.is_favorite ? " ⭐" : ""}</span>
+    </label>
+    <span class="row-right">
+      <span class="meta">${[KIND_LABEL[a.kind] ?? a.kind, memberName].filter(Boolean).join(" · ")}</span>
+      <button class="del" data-del="/familia/actividad/${a.id}/borrar" title="Borrar">✕</button>
+    </span>
+  </li>`;
+}
+
+export async function renderNinosPage(env: Env): Promise<string> {
+  const d = db(env);
+  const members = await listMembers(d);
+  const nameById = new Map(members.map((m) => [m.id, m.name]));
+  const kids = members.filter((m) => m.access_level === "managed");
+  const activities = await d.all<FamilyActivity>("SELECT * FROM family_activities ORDER BY is_favorite DESC, created_at DESC");
+
+  const kidCard = (m: FamilyMember) => {
+    const edad = ageFromBirthdate(m.birthdate);
+    return `<div class="card">
+      <div class="card-head"><h3>${esc(m.name)}</h3></div>
+      <div class="role">${edad != null ? `${edad} años` : ""}</div>
+      ${m.interests ? `<div class="row"><span>Le gusta</span><b>${esc(m.interests)}</b></div>` : `<div class="empty">Sin intereses guardados</div>`}
+      <a class="edit-link" href="/familia/integrante/${m.id}/editar">✏️ Editar</a>
+    </div>`;
+  };
+
+  const body = `
+    <section class="panel">
+      <h2>🧸 Niños</h2>
+      <div class="grid">${kids.map(kidCard).join("") || `<div class="card">No hay integrantes marcados como "acceso gestionado" (niños) todavía.</div>`}</div>
+    </section>
+    <section class="panel">
+      <h2>🎲 Actividades familiares</h2>
+      <ul class="chores">${activities.length ? activities.map((a) => activityItem(a, a.for_member ? nameById.get(a.for_member) ?? null : null)).join("") : `<li class="empty-row">Sin actividades guardadas — pídele al bot ideas: "actividades para el fin de semana con Aday".</li>`}</ul>
+      <form class="add-form" method="post" action="/familia/actividad">
+        <input type="text" name="titulo" placeholder="Nueva actividad…" required>
+        <select name="tipo">
+          <option value="casa">En casa</option>
+          <option value="aire_libre">Al aire libre</option>
+          <option value="fin_semana">Fin de semana</option>
+        </select>
+        <select name="paraQuien"><option value="">Toda la familia</option>${assigneeOptions(members)}</select>
+        <button type="submit">+ Agregar</button>
+      </form>
+      <p class="soon-note">Marca ⭐ la casilla de una actividad cuando ya la probaron y funcionó, para acordarte de repetirla.</p>
+    </section>`;
+  return layout(env, "Niños", "ninos", body);
 }
 
 // ── Página: editar integrante ────────────────────────────────────────────
@@ -663,6 +743,7 @@ export async function renderEditMemberPage(env: Env, id: string): Promise<string
       <label class="field">Nivel físico<select name="nivelFisico">${fitnessOptions(m.fitness_level)}</select></label>
       <label class="field">Tiempo disponible<input type="text" name="tiempoDisponible" value="${esc(m.time_available ?? "")}"></label>
       <label class="field">Lesiones / limitaciones<input type="text" name="lesiones" value="${esc(m.injuries ?? "")}"></label>
+      <label class="field">Intereses / gustos<input type="text" name="intereses" value="${esc(m.interests ?? "")}"></label>
       <div class="btn-row">
         <button type="submit">Guardar cambios</button>
         <a class="btn-secondary" href="/familia/integrantes">Cancelar</a>

@@ -58,6 +58,7 @@ function memberSummary(m: FamilyMember) {
     preferenciasComida: m.food_preferences,
     alergias: m.allergies,
     objetivoNutricional: m.nutrition_goal,
+    intereses: m.interests,
     imc: bmi?.bmi ?? null,
     categoriaImc: bmi?.category ?? null,
   };
@@ -90,6 +91,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       nivelFisico: z.enum(["bajo", "medio", "alto"]).optional().describe("Nivel actual de condición física"),
       tiempoDisponible: z.string().optional().describe("ej. '3 veces por semana, 30 min'"),
       lesiones: z.string().optional().describe("Lesiones o limitaciones físicas a respetar en el plan de ejercicio"),
+      intereses: z.string().optional().describe("Gustos/intereses (útil sobre todo para niños), ej. 'dinosaurios, dibujar, fútbol'"),
     }),
     execute: async (input) => {
       const total = await countMembers(d);
@@ -115,8 +117,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
 
       await d.run(
         `INSERT INTO family_members
-          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, fitness_level, time_available, injuries, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           input.nombre,
@@ -133,6 +135,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
           input.nivelFisico ?? null,
           input.tiempoDisponible ?? null,
           input.lesiones ?? null,
+          input.intereses ?? null,
           now,
           now,
         ],
@@ -201,6 +204,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       nivelFisico: z.enum(["bajo", "medio", "alto"]).optional(),
       tiempoDisponible: z.string().optional().describe("ej. '3 veces por semana, 30 min'"),
       lesiones: z.string().optional(),
+      intereses: z.string().optional().describe("Gustos/intereses (útil sobre todo para niños)"),
     }),
     execute: async ({ nombre, ...fields }) => {
       const check = await requireFullAccessSender(ctx);
@@ -223,6 +227,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         fitness_level: fields.nivelFisico,
         time_available: fields.tiempoDisponible,
         injuries: fields.lesiones,
+        interests: fields.intereses,
       };
       for (const [col, val] of Object.entries(map)) {
         if (val !== undefined) {
@@ -559,6 +564,80 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const guardarActividadFamiliar = tool({
+    description:
+      "Guarda una idea de actividad familiar (sugerencia nueva, o una ya probada que funcionó bien). Úsala cuando sugieras actividades para los niños o el fin de semana, y también cuando digan 'esa nos funcionó, guárdala'.",
+    inputSchema: z.object({
+      titulo: z.string(),
+      descripcion: z.string().optional(),
+      tipo: z.enum(["casa", "aire_libre", "fin_semana"]),
+      paraQuien: z.string().optional().describe("Nombre del niño/integrante, si es para uno en particular"),
+      yaFunciono: z.boolean().optional().default(false).describe("true si la familia ya la probó y le gustó"),
+    }),
+    execute: async ({ titulo, descripcion, tipo, paraQuien, yaFunciono }) => {
+      let forId: string | null = null;
+      if (paraQuien) {
+        const m = await findMemberByName(d, paraQuien);
+        if (!m) return { error: `No encontré a ningún integrante llamado ${paraQuien}.` };
+        forId = m.id;
+      }
+      const now = Date.now();
+      await d.run(
+        `INSERT INTO family_activities (id, title, description, kind, for_member, is_favorite, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [newId(), titulo, descripcion ?? null, tipo, forId, yaFunciono ? 1 : 0, now, now],
+      );
+      return { ok: true, mensaje: `Actividad "${titulo}" guardada${yaFunciono ? " como favorita" : ""}.` };
+    },
+  });
+
+  const listarActividadesFamiliares = tool({
+    description: "Lista las actividades familiares guardadas, opcionalmente filtradas por tipo o solo las favoritas (ya probadas).",
+    inputSchema: z.object({
+      tipo: z.enum(["casa", "aire_libre", "fin_semana"]).optional(),
+      soloFavoritas: z.boolean().optional().default(false),
+    }),
+    execute: async ({ tipo, soloFavoritas }) => {
+      const rows = await d.all<{ title: string; description: string | null; kind: string; for_member: string | null; is_favorite: number }>(
+        "SELECT title, description, kind, for_member, is_favorite FROM family_activities ORDER BY is_favorite DESC, created_at DESC",
+      );
+      const members = await listMembers(d);
+      const nameById = new Map(members.map((m) => [m.id, m.name]));
+      const filtered = rows.filter((r) => (!tipo || r.kind === tipo) && (!soloFavoritas || r.is_favorite === 1));
+      return {
+        actividades: filtered.map((r) => ({
+          titulo: r.title,
+          descripcion: r.description,
+          tipo: r.kind,
+          paraQuien: r.for_member ? (nameById.get(r.for_member) ?? null) : null,
+          favorita: r.is_favorite === 1,
+        })),
+      };
+    },
+  });
+
+  const marcarActividadFavorita = tool({
+    description: "Marca una actividad guardada como favorita (ya la probaron y funcionó).",
+    inputSchema: z.object({ titulo: z.string() }),
+    execute: async ({ titulo }) => {
+      const row = await d.first<{ id: string }>("SELECT id FROM family_activities WHERE title LIKE ? ORDER BY created_at DESC LIMIT 1", [`%${titulo}%`]);
+      if (!row) return { error: `No encontré ninguna actividad que coincida con "${titulo}".` };
+      await d.run("UPDATE family_activities SET is_favorite = 1, updated_at = ? WHERE id = ?", [Date.now(), row.id]);
+      return { ok: true, mensaje: "Marcada como favorita." };
+    },
+  });
+
+  const consultarInteresesNinos = tool({
+    description: "Trae edad e intereses de cada integrante (útil antes de sugerir actividades) — incluye a todos, no solo a los niños.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const members = await listMembers(d);
+      return {
+        integrantes: members.map((m) => ({ nombre: m.name, edad: ageFromBirthdate(m.birthdate), intereses: m.interests })),
+      };
+    },
+  });
+
   const unirseConEnlace = tool({
     description:
       "Conecta a quien escribe con su perfil de familia usando el código de un enlace de invitación (mensajes que empiezan con '/start '). Llama esta tool SIEMPRE que el mensaje sea justo eso, antes de responder cualquier otra cosa.",
@@ -682,6 +761,10 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     consultarPerfilFisicoFamilia,
     guardarPlanEjercicio,
     consultarPlanEjercicio,
+    guardarActividadFamiliar,
+    listarActividadesFamiliares,
+    marcarActividadFavorita,
+    consultarInteresesNinos,
     unirseConEnlace,
   };
 }
