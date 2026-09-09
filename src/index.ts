@@ -24,7 +24,14 @@ import {
 import { adminApp } from "./admin/routes";
 import { adminAuth } from "./admin/auth";
 import {
-  renderFamilyPage,
+  renderHome,
+  renderIntegrantesPage,
+  renderTareasPage,
+  renderMenuPage,
+  renderCompraPage,
+  renderRecordatoriosPage,
+  renderFinanzasPage,
+  renderNinosPage,
   renderEditMemberPage,
   toggleChore,
   toggleShoppingItem,
@@ -607,10 +614,17 @@ app.get("/admin/", (c) => c.redirect("/admin/overview"));
 // Admin dashboard — Basic Auth guarded sub-app mounted at /admin/*.
 app.route("/admin", adminApp);
 
-// Resumen web de la familia (member/family-page.ts) — misma contraseña del panel.
+// Centro Familiar (member/family-page.ts) — misma contraseña del panel.
 app.use("/familia", async (c, next) => adminAuth(c.env)(c, next));
 app.use("/familia/*", async (c, next) => adminAuth(c.env)(c, next));
-app.get("/familia", async (c) => c.html(await renderFamilyPage(c.env)));
+app.get("/familia", async (c) => c.html(await renderHome(c.env)));
+app.get("/familia/integrantes", async (c) => c.html(await renderIntegrantesPage(c.env)));
+app.get("/familia/tareas", async (c) => c.html(await renderTareasPage(c.env)));
+app.get("/familia/menu", async (c) => c.html(await renderMenuPage(c.env)));
+app.get("/familia/compra", async (c) => c.html(await renderCompraPage(c.env)));
+app.get("/familia/recordatorios", (c) => c.html(renderRecordatoriosPage(c.env)));
+app.get("/familia/finanzas", (c) => c.html(renderFinanzasPage(c.env)));
+app.get("/familia/ninos", (c) => c.html(renderNinosPage(c.env)));
 app.post("/familia/tarea/:id/toggle", async (c) => {
   await toggleChore(c.env, c.req.param("id"));
   return c.body(null, 204);
@@ -621,7 +635,7 @@ app.post("/familia/tarea/:id/borrar", async (c) => {
 });
 app.post("/familia/tarea", async (c) => {
   await addChoreFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
-  return c.redirect(c.req.header("Referer") || "/familia");
+  return c.redirect(c.req.header("Referer") || "/familia/tareas");
 });
 app.post("/familia/compra/:id/toggle", async (c) => {
   await toggleShoppingItem(c.env, c.req.param("id"));
@@ -633,24 +647,24 @@ app.post("/familia/compra/:id/borrar", async (c) => {
 });
 app.post("/familia/compra", async (c) => {
   await addShoppingItemFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
-  return c.redirect(c.req.header("Referer") || "/familia");
+  return c.redirect(c.req.header("Referer") || "/familia/compra");
 });
 app.post("/familia/menu", async (c) => {
   await saveTodayMenuFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
-  return c.redirect(c.req.header("Referer") || "/familia");
+  return c.redirect(c.req.header("Referer") || "/familia/menu");
 });
 app.get("/familia/integrante/:id/editar", async (c) => c.html(await renderEditMemberPage(c.env, c.req.param("id"))));
 app.post("/familia/integrante", async (c) => {
   await addMemberFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
-  return c.redirect("/familia");
+  return c.redirect("/familia/integrantes");
 });
 app.post("/familia/integrante/:id", async (c) => {
   await updateMemberFromForm(c.env, c.req.param("id"), Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
-  return c.redirect("/familia");
+  return c.redirect("/familia/integrantes");
 });
 app.post("/familia/integrante/:id/borrar", async (c) => {
   await deleteMember(c.env, c.req.param("id"));
-  return c.redirect("/familia");
+  return c.redirect("/familia/integrantes");
 });
 
 // Control-plane API — Bearer-guarded (CONTROL_PLANE_TOKEN) read-only sub-app

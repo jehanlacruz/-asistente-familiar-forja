@@ -1,8 +1,14 @@
-// member/family-page.ts — resumen web EDITABLE de la familia La Cruz
+// member/family-page.ts — "Centro Familiar" web app de la familia La Cruz
 // ("/familia"). Vive en member/, así que forjabot update NUNCA la toca. Se
 // monta desde src/index.ts (rutas finas, ver ese archivo) porque una ruta
 // HTTP nueva no tiene otro punto de extensión — protegida con el mismo
 // Basic Auth del panel.
+//
+// Estructura: pantalla de inicio con una tarjeta por área → cada tarjeta
+// abre su propia página con el detalle completo (ver/editar/crear/borrar).
+// Áreas ya construidas: Integrantes, Tareas (+ejercicio), Compra, Menú.
+// Áreas "próximamente" (placeholders con lo que van a hacer): Recordatorios
+// reales, Actividad física con plan, Niños y actividades, Finanzas.
 import {
   db,
   newId,
@@ -159,7 +165,50 @@ export async function saveTodayMenuFromForm(env: Env, form: Record<string, strin
   }
 }
 
-// ── Render: página principal ───────────────────────────────────────────
+// ── Layout compartido ──────────────────────────────────────────────────
+
+const NAV = [
+  { key: "inicio", href: "/familia", icon: "🏠", label: "Inicio" },
+  { key: "integrantes", href: "/familia/integrantes", icon: "👪", label: "Integrantes" },
+  { key: "tareas", href: "/familia/tareas", icon: "✅", label: "Tareas" },
+  { key: "compra", href: "/familia/compra", icon: "🛒", label: "Compra" },
+  { key: "menu", href: "/familia/menu", icon: "🍽️", label: "Comida" },
+  { key: "recordatorios", href: "/familia/recordatorios", icon: "⏰", label: "Recordatorios" },
+  { key: "finanzas", href: "/familia/finanzas", icon: "💶", label: "Finanzas" },
+  { key: "ninos", href: "/familia/ninos", icon: "🧸", label: "Niños" },
+];
+
+function layout(env: Env, title: string, activeKey: string, bodyHtml: string): string {
+  return `<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(title)} · ${esc(env.BUSINESS_NAME || "Centro Familiar")}</title>
+<style>${SHARED_STYLE}</style>
+</head><body>
+<header>
+  <h1>👨‍👩‍👧‍👦 Centro Familiar</h1>
+  <p>${esc(env.BUSINESS_NAME || "Familia")}</p>
+</header>
+<nav>${NAV.map((n) => `<a href="${n.href}" class="${n.key === activeKey ? "active" : ""}">${n.icon} ${esc(n.label)}</a>`).join("")}</nav>
+<main>${bodyHtml}</main>
+<footer>Página privada de la familia — no la compartas fuera de casa.</footer>
+<script>${SHARED_SCRIPT}</script>
+</body></html>`;
+}
+
+function comingSoonPage(env: Env, key: string, icon: string, title: string, description: string, willHave: string[]): string {
+  const body = `<section class="panel soon-panel">
+    <div class="soon-icon">${icon}</div>
+    <h2>${esc(title)}</h2>
+    <p class="soon-desc">${esc(description)}</p>
+    <p class="soon-label">Próximamente va a tener:</p>
+    <ul class="soon-list">${willHave.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
+    <a class="btn-secondary" href="/familia">← Volver al inicio</a>
+  </section>`;
+  return layout(env, title, key, body);
+}
+
+// ── Tarjetas y piezas reusables ────────────────────────────────────────
 
 function memberCard(m: FamilyMember): string {
   const edad = ageFromBirthdate(m.birthdate);
@@ -222,95 +271,71 @@ function addChoreForm(members: FamilyMember[], kind: "diaria" | "puntual", categ
   </form>`;
 }
 
-export async function renderFamilyPage(env: Env): Promise<string> {
+function choreList(list: { c: Chore; pending: boolean }[], nameById: Map<string, string>, emptyMsg: string): string {
+  return `<ul class="chores">${
+    list.length
+      ? list.map((x) => choreItem(x.c, x.pending, x.c.assigned_to ? nameById.get(x.c.assigned_to) ?? null : null)).join("")
+      : `<li class="empty-row">${esc(emptyMsg)}</li>`
+  }</ul>`;
+}
+
+async function loadChores(env: Env): Promise<{ rows: Chore[]; withPending: { c: Chore; pending: boolean }[]; nameById: Map<string, string> }> {
   const d = db(env);
   const members = await listMembers(d);
   const nameById = new Map(members.map((m) => [m.id, m.name]));
   const today = todayInTZ(env);
-
-  const chores = await d.all<Chore>(
+  const rows = await d.all<Chore>(
     "SELECT id, title, assigned_to, status, due_date, kind, category, created_at, updated_at FROM household_chores ORDER BY created_at ASC",
   );
-  const withPending = chores.map((c) => ({ c, pending: isChorePending(c, env, today) }));
+  return { rows, withPending: rows.map((c) => ({ c, pending: isChorePending(c, env, today) })), nameById };
+}
 
-  const diarias = withPending.filter((x) => x.c.category === "tarea" && x.c.kind === "diaria");
-  const puntuales = withPending.filter((x) => x.c.category === "tarea" && x.c.kind === "puntual");
-  const ejercicio = withPending.filter((x) => x.c.category === "ejercicio");
+// ── Página: Inicio (hub) ───────────────────────────────────────────────
 
-  const asignadasPend = withPending.filter((x) => x.pending && x.c.assigned_to);
-  const byMember = new Map<string, typeof asignadasPend>();
-  for (const x of asignadasPend) {
-    const key = x.c.assigned_to!;
-    if (!byMember.has(key)) byMember.set(key, []);
-    byMember.get(key)!.push(x);
-  }
+export async function renderHome(env: Env): Promise<string> {
+  const { withPending } = await loadChores(env);
+  const pendTareas = withPending.filter((x) => x.pending && x.c.category === "tarea");
+  const pendEjercicio = withPending.filter((x) => x.pending && x.c.category === "ejercicio");
 
-  const menu = await d.first<{ breakfast: string | null; lunch: string | null; dinner: string | null; notes: string | null }>(
-    "SELECT breakfast, lunch, dinner, notes FROM meal_plan WHERE date = ?",
+  const d = db(env);
+  const today = todayInTZ(env);
+  const menu = await d.first<{ breakfast: string | null; lunch: string | null; dinner: string | null }>(
+    "SELECT breakfast, lunch, dinner FROM meal_plan WHERE date = ?",
     [today],
   );
-
-  const shopping = await d.all<{ id: string; name: string; category: string | null; status: string }>(
-    "SELECT id, name, category, status FROM shopping_items ORDER BY status ASC, created_at ASC",
+  const shoppingPending = await d.first<{ n: number }>(
+    "SELECT COUNT(*) as n FROM shopping_items WHERE status = 'pending'",
   );
-  const shoppingPending = shopping.filter((s) => s.status === "pending");
 
-  const choreList = (list: typeof withPending, emptyMsg: string) =>
-    `<ul class="chores">${
-      list.length
-        ? list.map((x) => choreItem(x.c, x.pending, x.c.assigned_to ? nameById.get(x.c.assigned_to) ?? null : null)).join("")
-        : `<li class="empty-row">${esc(emptyMsg)}</li>`
-    }</ul>`;
+  const menuResumen = menu ? [menu.breakfast, menu.lunch, menu.dinner].filter(Boolean).join(" · ") : null;
 
-  const asignadasHtml = byMember.size
-    ? Array.from(byMember.entries())
-        .map(([memberId, items]) => {
-          const name = nameById.get(memberId) ?? "?";
-          return `<div class="assignee-block"><h4>${esc(name)}</h4>${choreList(items, "")}</div>`;
-        })
-        .join("")
-    : `<p class="empty-row">Nadie tiene pendientes asignados ahorita.</p>`;
+  const hubCard = (href: string, icon: string, title: string, body: string, soon = false) => `
+    <a class="hub-card ${soon ? "soon" : ""}" href="${href}">
+      <div class="hub-icon">${icon}</div>
+      <h3>${esc(title)}</h3>
+      <p>${body}</p>
+      ${soon ? `<span class="soon-tag">próximamente</span>` : ""}
+    </a>`;
 
-  const menuHtml = `<form class="menu-form" method="post" action="/familia/menu">
-    <label>Desayuno<input type="text" name="desayuno" value="${esc(menu?.breakfast || "")}"></label>
-    <label>Comida<input type="text" name="comida" value="${esc(menu?.lunch || "")}"></label>
-    <label>Cena<input type="text" name="cena" value="${esc(menu?.dinner || "")}"></label>
-    <button type="submit">Guardar menú de hoy</button>
-  </form>`;
+  const body = `<div class="hub-grid">
+    ${hubCard("/familia/tareas", "✅", "Tareas de hoy", pendTareas.length ? `${pendTareas.length} pendiente${pendTareas.length === 1 ? "" : "s"}` : "Todo al día 🎉")}
+    ${hubCard("/familia/compra", "🛒", "Lista de compras", (shoppingPending?.n ?? 0) > 0 ? `${shoppingPending?.n} por comprar` : "Nada pendiente")}
+    ${hubCard("/familia/menu", "🍽️", "Menú de hoy", esc(menuResumen || "Sin definir todavía"))}
+    ${hubCard("/familia/tareas#ejercicio", "🏃", "Ejercicio", pendEjercicio.length ? `${pendEjercicio.length} rutina${pendEjercicio.length === 1 ? "" : "s"} pendiente${pendEjercicio.length === 1 ? "" : "s"}` : "Sin rutinas hoy")}
+    ${hubCard("/familia/recordatorios", "⏰", "Recordatorios", "Avisos a hora exacta", true)}
+    ${hubCard("/familia/finanzas", "💶", "Finanzas", "Presupuesto del mes", true)}
+    ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas para Aday y Adiel", true)}
+    ${hubCard("/familia/integrantes", "👪", "Integrantes", "Perfiles de la familia")}
+  </div>`;
 
-  const shoppingItem = (s: (typeof shopping)[number]) => `<li class="${s.status === "bought" ? "done" : ""}">
-    <label>
-      <input type="checkbox" data-toggle="/familia/compra/${s.id}/toggle" ${s.status === "bought" ? "checked" : ""}>
-      <span class="txt">${esc(s.name)}</span>
-    </label>
-    <span class="row-right">
-      ${s.category ? `<span class="meta">${esc(s.category)}</span>` : ""}
-      <button class="del" data-del="/familia/compra/${s.id}/borrar" title="Borrar">✕</button>
-    </span>
-  </li>`;
+  return layout(env, "Inicio", "inicio", body);
+}
 
-  return `<!doctype html>
-<html lang="es"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(env.BUSINESS_NAME || "Familia")}</title>
-<style>${SHARED_STYLE}</style>
-</head><body>
-<header>
-  <h1>👨‍👩‍👧‍👦 ${esc(env.BUSINESS_NAME || "Familia")}</h1>
-  <p>Resumen en vivo de la casa — todo se puede editar aquí mismo</p>
-</header>
-<nav>
-  <a href="#integrantes">👪 Integrantes</a>
-  <a href="#diarias">📋 Diarias</a>
-  <a href="#puntuales">✅ Puntuales</a>
-  <a href="#ejercicio">🏃 Ejercicio</a>
-  <a href="#asignadas">🙋 Asignadas</a>
-  <a href="#menu">🍽️ Menú</a>
-  <a href="#compra">🛒 Compra</a>
-</nav>
-<main>
-  <section id="integrantes">
-    <div class="grid">${members.map(memberCard).join("") || `<div class="card">Todavía no hay nadie registrado.</div>`}</div>
+// ── Página: Integrantes ─────────────────────────────────────────────────
+
+export async function renderIntegrantesPage(env: Env): Promise<string> {
+  const members = await listMembers(db(env));
+  const body = `<div class="grid">${members.map(memberCard).join("") || `<div class="card">Todavía no hay nadie registrado.</div>`}</div>
     <details class="add-member"><summary>+ Agregar integrante</summary>
       <form method="post" action="/familia/integrante">
         <input type="text" name="nombre" placeholder="Nombre" required>
@@ -324,15 +349,82 @@ export async function renderFamilyPage(env: Env): Promise<string> {
         <input type="text" name="preferenciasComida" placeholder="Le gusta comer…">
         <button type="submit">Guardar integrante</button>
       </form>
-    </details>
-  </section>
+    </details>`;
+  return layout(env, "Integrantes", "integrantes", body);
+}
 
-  ${section("diarias", "📋", "Tareas diarias", choreList(diarias, "Sin tareas diarias registradas.") + addChoreForm(members, "diaria", "tarea"))}
-  ${section("puntuales", "✅", "Tareas puntuales", choreList(puntuales, "Sin tareas puntuales pendientes.") + addChoreForm(members, "puntual", "tarea"))}
-  ${section("ejercicio", "🏃", "Ejercicio", choreList(ejercicio, "Sin rutinas registradas.") + addChoreForm(members, "puntual", "ejercicio"))}
-  ${section("asignadas", "🙋", "Quién hace qué", asignadasHtml)}
-  ${section("menu", "🍽️", "Menú de hoy", menuHtml)}
-  ${section(
+// ── Página: Tareas (diarias, puntuales, ejercicio, asignadas) ──────────
+
+export async function renderTareasPage(env: Env): Promise<string> {
+  const { withPending, nameById } = await loadChores(env);
+  const members = await listMembers(db(env));
+
+  const diarias = withPending.filter((x) => x.c.category === "tarea" && x.c.kind === "diaria");
+  const puntuales = withPending.filter((x) => x.c.category === "tarea" && x.c.kind === "puntual");
+  const ejercicio = withPending.filter((x) => x.c.category === "ejercicio");
+
+  const asignadasPend = withPending.filter((x) => x.pending && x.c.assigned_to);
+  const byMember = new Map<string, typeof asignadasPend>();
+  for (const x of asignadasPend) {
+    const key = x.c.assigned_to!;
+    if (!byMember.has(key)) byMember.set(key, []);
+    byMember.get(key)!.push(x);
+  }
+  const asignadasHtml = byMember.size
+    ? Array.from(byMember.entries())
+        .map(([memberId, items]) => `<div class="assignee-block"><h4>${esc(nameById.get(memberId) ?? "?")}</h4>${choreList(items, nameById, "")}</div>`)
+        .join("")
+    : `<p class="empty-row">Nadie tiene pendientes asignados ahorita.</p>`;
+
+  const body = `
+    ${section("diarias", "📋", "Tareas diarias", choreList(diarias, nameById, "Sin tareas diarias registradas.") + addChoreForm(members, "diaria", "tarea"))}
+    ${section("puntuales", "✅", "Tareas puntuales", choreList(puntuales, nameById, "Sin tareas puntuales pendientes.") + addChoreForm(members, "puntual", "tarea"))}
+    ${section("ejercicio", "🏃", "Ejercicio", choreList(ejercicio, nameById, "Sin rutinas registradas.") + addChoreForm(members, "puntual", "ejercicio"))}
+    ${section("asignadas", "🙋", "Quién hace qué", asignadasHtml)}
+  `;
+  return layout(env, "Tareas", "tareas", body);
+}
+
+// ── Página: Menú de hoy ─────────────────────────────────────────────────
+
+export async function renderMenuPage(env: Env): Promise<string> {
+  const today = todayInTZ(env);
+  const menu = await db(env).first<{ breakfast: string | null; lunch: string | null; dinner: string | null }>(
+    "SELECT breakfast, lunch, dinner FROM meal_plan WHERE date = ?",
+    [today],
+  );
+  const body = `<section class="panel">
+    <h2>🍽️ Menú de hoy</h2>
+    <form class="menu-form" method="post" action="/familia/menu">
+      <label>Desayuno<input type="text" name="desayuno" value="${esc(menu?.breakfast || "")}"></label>
+      <label>Comida<input type="text" name="comida" value="${esc(menu?.lunch || "")}"></label>
+      <label>Cena<input type="text" name="cena" value="${esc(menu?.dinner || "")}"></label>
+      <button type="submit">Guardar menú de hoy</button>
+    </form>
+    <p class="soon-note">🔜 Próximamente: cuestionario de gustos/alergias por integrante y menú semanal generado con recetas paso a paso.</p>
+  </section>`;
+  return layout(env, "Menú", "menu", body);
+}
+
+// ── Página: Lista de la compra ──────────────────────────────────────────
+
+export async function renderCompraPage(env: Env): Promise<string> {
+  const shopping = await db(env).all<{ id: string; name: string; category: string | null; status: string }>(
+    "SELECT id, name, category, status FROM shopping_items ORDER BY status ASC, created_at ASC",
+  );
+  const shoppingPending = shopping.filter((s) => s.status === "pending");
+  const shoppingItem = (s: (typeof shopping)[number]) => `<li class="${s.status === "bought" ? "done" : ""}">
+    <label>
+      <input type="checkbox" data-toggle="/familia/compra/${s.id}/toggle" ${s.status === "bought" ? "checked" : ""}>
+      <span class="txt">${esc(s.name)}</span>
+    </label>
+    <span class="row-right">
+      ${s.category ? `<span class="meta">${esc(s.category)}</span>` : ""}
+      <button class="del" data-del="/familia/compra/${s.id}/borrar" title="Borrar">✕</button>
+    </span>
+  </li>`;
+
+  const body = section(
     "compra",
     "🛒",
     `Lista de la compra (${shoppingPending.length} pendiente${shoppingPending.length === 1 ? "" : "s"})`,
@@ -341,30 +433,47 @@ export async function renderFamilyPage(env: Env): Promise<string> {
        <input type="text" name="nombre" placeholder="Nuevo producto…" required>
        <input type="text" name="categoria" placeholder="Categoría (opcional)">
        <button type="submit">+ Agregar</button>
-     </form>`,
-  )}
-</main>
-<footer>Página privada de la familia — no la compartas fuera de casa.</footer>
-<script>${SHARED_SCRIPT}</script>
-</body></html>`;
+     </form>
+     <p class="soon-note">🔜 Próximamente: se llena sola con lo que falte según el menú semanal.</p>`,
+  );
+  return layout(env, "Compra", "compra", body);
 }
 
-// ── Render: editar integrante ──────────────────────────────────────────
+// ── Páginas "próximamente" ───────────────────────────────────────────────
+
+export function renderRecordatoriosPage(env: Env): string {
+  return comingSoonPage(env, "recordatorios", "⏰", "Recordatorios", "Avisos puntuales que llegan por Telegram justo a la hora que digas — no solo una fecha límite como en Tareas.", [
+    "Crear un recordatorio con fecha y hora exacta desde el chat o desde aquí",
+    "Aviso automático a quien corresponda cuando llegue la hora",
+    "Recordatorios que se repiten (cada semana, cada mes)",
+  ]);
+}
+
+export function renderFinanzasPage(env: Env): string {
+  return comingSoonPage(env, "finanzas", "💶", "Finanzas", "Ingresos y gastos por categoría, presupuesto mensual, y un resumen de cómo va el mes visible desde el inicio.", [
+    "Registrar gastos e ingresos por categoría desde el chat (\"gasté 40€ en el súper\")",
+    "Presupuesto mensual con alertas si un gasto se sale de lo previsto",
+    "Resumen \"cómo vamos este mes\" en la pantalla de inicio",
+  ]);
+}
+
+export function renderNinosPage(env: Env): string {
+  return comingSoonPage(env, "ninos", "🧸", "Niños y actividades familiares", "Sugerencias de actividades para Aday y Adiel según su edad e intereses, en casa o al aire libre.", [
+    "Cuestionario de edades e intereses de cada niño",
+    "Sugerencias de actividades para hacer en casa, al aire libre o el fin de semana",
+    "Guardar las actividades que ya funcionaron para repetirlas",
+  ]);
+}
+
+// ── Página: editar integrante ────────────────────────────────────────────
 
 export async function renderEditMemberPage(env: Env, id: string): Promise<string> {
   const d = db(env);
   const m = await d.first<FamilyMember>("SELECT * FROM family_members WHERE id = ?", [id]);
-  if (!m) return `<!doctype html><html><body><p>No encontré a ese integrante. <a href="/familia">Volver</a></p></body></html>`;
+  if (!m) return layout(env, "Integrante no encontrado", "integrantes", `<p>No encontré a ese integrante. <a href="/familia/integrantes">Volver</a></p>`);
 
-  return `<!doctype html>
-<html lang="es"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Editar ${esc(m.name)}</title>
-<style>${SHARED_STYLE}</style>
-</head><body>
-<header><h1>✏️ Editar a ${esc(m.name)}</h1></header>
-<main>
-  <section class="panel">
+  const body = `<section class="panel">
+    <h2>✏️ Editar a ${esc(m.name)}</h2>
     <form method="post" action="/familia/integrante/${m.id}">
       <label class="field">Nombre completo<input type="text" name="nombre" value="${esc(m.name)}" required></label>
       <label class="field">Rol<input type="text" name="rol" value="${esc(m.role)}"></label>
@@ -377,15 +486,14 @@ export async function renderEditMemberPage(env: Env, id: string): Promise<string
       <label class="field">Le gusta comer<input type="text" name="preferenciasComida" value="${esc(m.food_preferences ?? "")}"></label>
       <div class="btn-row">
         <button type="submit">Guardar cambios</button>
-        <a class="btn-secondary" href="/familia">Cancelar</a>
+        <a class="btn-secondary" href="/familia/integrantes">Cancelar</a>
       </div>
     </form>
     <form method="post" action="/familia/integrante/${m.id}/borrar" class="danger-form" onsubmit="return confirm('¿Borrar a ${esc(m.name)} de la familia? No se puede deshacer.');">
       <button type="submit" class="danger">🗑 Borrar a ${esc(m.name)}</button>
     </form>
-  </section>
-</main>
-</body></html>`;
+  </section>`;
+  return layout(env, `Editar ${m.name}`, "integrantes", body);
 }
 
 // ── Estilos y script compartidos ───────────────────────────────────────
@@ -396,8 +504,8 @@ const SHARED_STYLE = `
   body { margin:0; font-family:-apple-system,system-ui,sans-serif; background:#f3f4f8; color:#1a1f3c; }
   @media (prefers-color-scheme: dark) {
     body { background:#0e1116; color:#e8eaf2; }
-    .card, .panel, nav, .add-form, .add-member form, .menu-form, select, input, .field input { background:#171b24 !important; border-color:#2a2f3c !important; color:#e8eaf2 !important; }
-    .row span, .meta, .role { color:#9aa0b4 !important; }
+    .card, .panel, nav, .hub-card, .add-form, .add-member form, .menu-form, select, input, .field input { background:#171b24 !important; border-color:#2a2f3c !important; color:#e8eaf2 !important; }
+    .row span, .meta, .role, .hub-card p { color:#9aa0b4 !important; }
     li { border-bottom-color:#242938 !important; }
   }
   header { padding:22px 20px 10px; text-align:center; }
@@ -405,7 +513,23 @@ const SHARED_STYLE = `
   header p { margin:4px 0 0; color:#6b7280; font-size:.85rem; }
   nav { position:sticky; top:0; z-index:10; display:flex; gap:6px; overflow-x:auto; padding:10px 14px; background:#fff; border-bottom:1px solid #e5e7eb; }
   nav a { flex:none; font-size:.8rem; text-decoration:none; color:#4a6cf7; background:#eef1ff; padding:6px 12px; border-radius:999px; white-space:nowrap; }
+  nav a.active { background:#4a6cf7; color:#fff; }
   main { max-width:760px; margin:0 auto; padding:16px; }
+  .hub-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; }
+  .hub-card { display:block; background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:18px; text-decoration:none; color:inherit; position:relative; }
+  .hub-icon { font-size:1.6rem; margin-bottom:6px; }
+  .hub-card h3 { margin:0 0 4px; font-size:1rem; }
+  .hub-card p { margin:0; font-size:.82rem; color:#6b7280; }
+  .hub-card.soon { opacity:.7; }
+  .soon-tag { position:absolute; top:14px; right:14px; font-size:.62rem; background:#fef3c7; color:#b45309; padding:2px 7px; border-radius:999px; }
+  .soon-panel { text-align:center; padding:36px 20px; }
+  .soon-icon { font-size:2.4rem; }
+  .soon-desc { color:#6b7280; font-size:.9rem; max-width:440px; margin:8px auto 18px; }
+  .soon-label { font-size:.8rem; color:#9aa0b4; margin-bottom:6px; }
+  .soon-list { list-style:none; padding:0; margin:0 0 20px; display:inline-block; text-align:left; }
+  .soon-list li { padding:5px 0; font-size:.88rem; }
+  .soon-list li::before { content:"— "; color:#4a6cf7; }
+  .soon-note { margin-top:12px; font-size:.78rem; color:#9aa0b4; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; margin-bottom:10px; }
   .card { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:16px; position:relative; }
   .card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
