@@ -143,4 +143,61 @@ export function isChorePending(c: Chore, env: Env, today: string): boolean {
   return false;
 }
 
+export interface Reminder {
+  id: string;
+  title: string;
+  remind_at: number;
+  target_member: string | null;
+  repeat: string | null;
+  status: string;
+  created_by: string | null;
+  created_at: number;
+  sent_at: number | null;
+}
+
+/**
+ * Convierte una fecha+hora "de pared" en la zona horaria del bot (ej.
+ * "2026-09-10" + "08:30" en Europe/Berlin) al epoch UTC en ms — sin
+ * librerías, con el truco estándar de comparar cómo se ve ese instante
+ * ya formateado de vuelta en esa zona horaria (correcto también en DST).
+ */
+export function zonedDateTimeToUtcMs(dateStr: string, timeStr: string, env: Env): number {
+  const tz = env.BOT_TIMEZONE || "Europe/Berlin";
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const [hh, mm] = timeStr.split(":").map(Number);
+  const guessUtc = Date.UTC(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, 0);
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = fmt.formatToParts(new Date(guessUtc));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  const asIfLocal = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  return guessUtc - (asIfLocal - guessUtc);
+}
+
+/** "10/09/2026, 08:30" en la zona horaria del bot, para mostrar al humano. */
+export function formatDateTimeInTZ(ms: number, env: Env): string {
+  const tz = env.BOT_TIMEZONE || "Europe/Berlin";
+  return new Date(ms).toLocaleString("es-ES", { timeZone: tz, dateStyle: "short", timeStyle: "short" });
+}
+
+/** Manda un mensaje de texto simple por Telegram (fuera del flujo del agente — usado por el cron de recordatorios). */
+export async function sendTelegramMessage(env: Env, chatId: string, text: string): Promise<boolean> {
+  const token = env.TELEGRAM_BOT_TOKEN;
+  if (!token) return false;
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  });
+  return res.ok;
+}
+
 export const db = (env: Env) => new Db(env.DB);

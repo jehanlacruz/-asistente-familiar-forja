@@ -17,8 +17,11 @@ import {
   bmiInfo,
   getBotUsername,
   isChorePending,
+  zonedDateTimeToUtcMs,
+  formatDateTimeInTZ,
   type FamilyMember,
   type Chore,
+  type Reminder,
 } from "./family-lib";
 
 async function requireFullAccessSender(
@@ -466,6 +469,74 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const crearRecordatorio = tool({
+    description:
+      "Crea un recordatorio real: llega por Telegram justo a la hora indicada a quien corresponda. Úsalo cuando pidan que se les avise a una hora específica ('recuérdame a las 8 sacar la basura'), distinto de una tarea con fecha límite.",
+    inputSchema: z.object({
+      titulo: z.string(),
+      fecha: z.string().describe("YYYY-MM-DD"),
+      hora: z.string().describe("HH:MM, 24 horas"),
+      paraQuien: z.string().optional().describe("Nombre del integrante — si no se da, avisa a todos los de acceso completo"),
+      repetir: z.enum(["diario", "semanal", "mensual"]).optional().describe("Si se repite; si no, es una sola vez"),
+    }),
+    execute: async ({ titulo, fecha, hora, paraQuien, repetir }) => {
+      let targetId: string | null = null;
+      if (paraQuien) {
+        const m = await findMemberByName(d, paraQuien);
+        if (!m) return { error: `No encontré a ningún integrante llamado ${paraQuien}.` };
+        targetId = m.id;
+      }
+      const remindAt = zonedDateTimeToUtcMs(fecha, hora, ctx.env);
+      if (remindAt <= Date.now()) return { error: "Esa fecha y hora ya pasaron." };
+
+      const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const sender = senderChatId ? await findMemberByChatId(d, senderChatId) : null;
+
+      const id = newId();
+      await d.run(
+        `INSERT INTO reminders (id, title, remind_at, target_member, repeat, status, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        [id, titulo, remindAt, targetId, repetir ?? null, sender?.id ?? null, Date.now()],
+      );
+      return { ok: true, id, mensaje: `Recordatorio "${titulo}" programado para el ${formatDateTimeInTZ(remindAt, ctx.env)}${repetir ? ` (repite: ${repetir})` : ""}.` };
+    },
+  });
+
+  const listarRecordatorios = tool({
+    description: "Lista los próximos recordatorios pendientes.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const rows = await d.all<Reminder>(
+        "SELECT * FROM reminders WHERE status = 'pending' ORDER BY remind_at ASC LIMIT 20",
+      );
+      const members = await listMembers(d);
+      const nameById = new Map(members.map((m) => [m.id, m.name]));
+      return {
+        recordatorios: rows.map((r) => ({
+          id: r.id,
+          titulo: r.title,
+          cuando: formatDateTimeInTZ(r.remind_at, ctx.env),
+          paraQuien: r.target_member ? (nameById.get(r.target_member) ?? "?") : "todos",
+          repite: r.repeat,
+        })),
+      };
+    },
+  });
+
+  const cancelarRecordatorio = tool({
+    description: "Cancela un recordatorio pendiente por su título (o parte de él).",
+    inputSchema: z.object({ titulo: z.string() }),
+    execute: async ({ titulo }) => {
+      const row = await d.first<{ id: string; title: string }>(
+        "SELECT id, title FROM reminders WHERE status = 'pending' AND title LIKE ? ORDER BY remind_at ASC LIMIT 1",
+        [`%${titulo}%`],
+      );
+      if (!row) return { error: `No encontré un recordatorio pendiente que coincida con "${titulo}".` };
+      await d.run("UPDATE reminders SET status = 'cancelled' WHERE id = ?", [row.id]);
+      return { ok: true, mensaje: `Recordatorio "${row.title}" cancelado.` };
+    },
+  });
+
   return {
     registrarIntegranteFamilia,
     generarEnlaceInvitacion,
@@ -475,6 +546,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     registrarTareaCasa,
     listarTareasCasa,
     completarTareaCasa,
+    crearRecordatorio,
+    listarRecordatorios,
+    cancelarRecordatorio,
     agregarProductoCompra,
     listarListaCompra,
     marcarProductoComprado,

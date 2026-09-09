@@ -18,8 +18,11 @@ import {
   bmiInfo,
   todayInTZ,
   isChorePending,
+  zonedDateTimeToUtcMs,
+  formatDateTimeInTZ,
   type FamilyMember,
   type Chore,
+  type Reminder,
 } from "./family-lib";
 import type { Env } from "../src/env";
 
@@ -165,6 +168,27 @@ export async function saveTodayMenuFromForm(env: Env, form: Record<string, strin
   }
 }
 
+export async function addReminderFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const titulo = (form.titulo || "").trim();
+  if (!titulo || !form.fecha || !form.hora) return;
+  const d = db(env);
+  let targetId: string | null = null;
+  if (form.paraQuien) {
+    const m = await findMemberByName(d, form.paraQuien);
+    targetId = m?.id ?? null;
+  }
+  const remindAt = zonedDateTimeToUtcMs(form.fecha, form.hora, env);
+  await d.run(
+    `INSERT INTO reminders (id, title, remind_at, target_member, repeat, status, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?)`,
+    [newId(), titulo, remindAt, targetId, form.repetir || null, Date.now()],
+  );
+}
+
+export async function cancelReminder(env: Env, id: string): Promise<void> {
+  await db(env).run("UPDATE reminders SET status = 'cancelled' WHERE id = ?", [id]);
+}
+
 // ── Layout compartido ──────────────────────────────────────────────────
 
 const NAV = [
@@ -306,6 +330,9 @@ export async function renderHome(env: Env): Promise<string> {
   const shoppingPending = await d.first<{ n: number }>(
     "SELECT COUNT(*) as n FROM shopping_items WHERE status = 'pending'",
   );
+  const nextReminder = await d.first<{ title: string; remind_at: number }>(
+    "SELECT title, remind_at FROM reminders WHERE status = 'pending' ORDER BY remind_at ASC LIMIT 1",
+  );
 
   const menuResumen = menu ? [menu.breakfast, menu.lunch, menu.dinner].filter(Boolean).join(" · ") : null;
 
@@ -322,7 +349,7 @@ export async function renderHome(env: Env): Promise<string> {
     ${hubCard("/familia/compra", "🛒", "Lista de compras", (shoppingPending?.n ?? 0) > 0 ? `${shoppingPending?.n} por comprar` : "Nada pendiente")}
     ${hubCard("/familia/menu", "🍽️", "Menú de hoy", esc(menuResumen || "Sin definir todavía"))}
     ${hubCard("/familia/tareas#ejercicio", "🏃", "Ejercicio", pendEjercicio.length ? `${pendEjercicio.length} rutina${pendEjercicio.length === 1 ? "" : "s"} pendiente${pendEjercicio.length === 1 ? "" : "s"}` : "Sin rutinas hoy")}
-    ${hubCard("/familia/recordatorios", "⏰", "Recordatorios", "Avisos a hora exacta", true)}
+    ${hubCard("/familia/recordatorios", "⏰", "Recordatorios", nextReminder ? `${esc(nextReminder.title)} · ${esc(formatDateTimeInTZ(nextReminder.remind_at, env))}` : "Sin recordatorios programados")}
     ${hubCard("/familia/finanzas", "💶", "Finanzas", "Presupuesto del mes", true)}
     ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas para Aday y Adiel", true)}
     ${hubCard("/familia/integrantes", "👪", "Integrantes", "Perfiles de la familia")}
@@ -441,12 +468,39 @@ export async function renderCompraPage(env: Env): Promise<string> {
 
 // ── Páginas "próximamente" ───────────────────────────────────────────────
 
-export function renderRecordatoriosPage(env: Env): string {
-  return comingSoonPage(env, "recordatorios", "⏰", "Recordatorios", "Avisos puntuales que llegan por Telegram justo a la hora que digas — no solo una fecha límite como en Tareas.", [
-    "Crear un recordatorio con fecha y hora exacta desde el chat o desde aquí",
-    "Aviso automático a quien corresponda cuando llegue la hora",
-    "Recordatorios que se repiten (cada semana, cada mes)",
-  ]);
+export async function renderRecordatoriosPage(env: Env): Promise<string> {
+  const d = db(env);
+  const members = await listMembers(d);
+  const nameById = new Map(members.map((m) => [m.id, m.name]));
+  const rows = await d.all<Reminder>("SELECT * FROM reminders WHERE status = 'pending' ORDER BY remind_at ASC LIMIT 50");
+
+  const repeatLabel: Record<string, string> = { diario: "cada día", semanal: "cada semana", mensual: "cada mes" };
+  const item = (r: Reminder) => `<li>
+    <div class="rem-info">
+      <span class="txt">${esc(r.title)}</span>
+      <span class="meta">${esc(formatDateTimeInTZ(r.remind_at, env))} · ${r.target_member ? esc(nameById.get(r.target_member) ?? "?") : "todos"}${r.repeat ? ` · ${esc(repeatLabel[r.repeat] ?? r.repeat)}` : ""}</span>
+    </div>
+    <button class="del" data-del="/familia/recordatorio/${r.id}/borrar" title="Cancelar">✕</button>
+  </li>`;
+
+  const body = `<section class="panel">
+    <h2>⏰ Próximos recordatorios</h2>
+    <ul class="chores rem-list">${rows.length ? rows.map(item).join("") : `<li class="empty-row">No hay recordatorios programados.</li>`}</ul>
+    <form class="add-form rem-form" method="post" action="/familia/recordatorio">
+      <input type="text" name="titulo" placeholder="¿Qué hay que recordar?" required>
+      <input type="date" name="fecha" required>
+      <input type="time" name="hora" required>
+      <select name="paraQuien"><option value="">Todos</option>${assigneeOptions(members)}</select>
+      <select name="repetir">
+        <option value="">No se repite</option>
+        <option value="diario">Cada día</option>
+        <option value="semanal">Cada semana</option>
+        <option value="mensual">Cada mes</option>
+      </select>
+      <button type="submit">+ Programar</button>
+    </form>
+  </section>`;
+  return layout(env, "Recordatorios", "recordatorios", body);
 }
 
 export function renderFinanzasPage(env: Env): string {
@@ -560,6 +614,9 @@ const SHARED_STYLE = `
   .meta { color:#9aa0b4; font-size:.78rem; white-space:nowrap; }
   .row-right { display:flex; align-items:center; gap:8px; flex:none; }
   .del { border:none; background:none; color:#d1d5db; font-size:.95rem; cursor:pointer; padding:2px 6px; }
+  .rem-list li { align-items:flex-start; }
+  .rem-info { display:flex; flex-direction:column; gap:2px; }
+  .rem-form select { flex:1 1 110px; }
   .del:hover { color:#ef4444; }
   .add-form { padding-top:10px; margin-top:8px; border-top:1px dashed #e5e7eb; }
   .add-form select { flex:1 1 120px; }

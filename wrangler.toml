@@ -156,7 +156,7 @@ DASHBOARD_BASE_URL = "https://forja-starter-152f1b.jehanlacruz.workers.dev"
 command = "node scripts/forja-preflight.mjs"
 
 [triggers]
-crons = ["0 3 * * *"]  # daily 3am UTC: purge old messages
+crons = ["0 3 * * *", "*/5 * * * *"]  # daily 3am UTC: purge old messages · */5min: recordatorios de la familia
 
 # DASHBOARD_PASSWORD  (secret) — HTTP Basic Auth password for the admin dashboard; username is always "admin".
 # Set it with: wrangler secret put DASHBOARD_PASSWORD

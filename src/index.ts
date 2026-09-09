@@ -32,6 +32,8 @@ import {
   renderRecordatoriosPage,
   renderFinanzasPage,
   renderNinosPage,
+  addReminderFromForm,
+  cancelReminder,
   renderEditMemberPage,
   toggleChore,
   toggleShoppingItem,
@@ -49,6 +51,7 @@ import { applyTier } from "./tier";
 import { applyBranding } from "./admin/branding";
 import { isOwner, handleOwnerMessage } from "./owner/handler";
 import { purgeOldMessages, purgeOldMedia, purgeOldTestChats } from "./crons/purgeOldMessages";
+import { runDueReminders } from "../member/reminders-cron";
 import { reindexFixtures } from "./kb/reindex";
 import { widgetJs, widgetPreflight, webPoll, webSend } from "./web/rutas";
 import { analyzeConversations } from "./insights/analyzer";
@@ -622,7 +625,15 @@ app.get("/familia/integrantes", async (c) => c.html(await renderIntegrantesPage(
 app.get("/familia/tareas", async (c) => c.html(await renderTareasPage(c.env)));
 app.get("/familia/menu", async (c) => c.html(await renderMenuPage(c.env)));
 app.get("/familia/compra", async (c) => c.html(await renderCompraPage(c.env)));
-app.get("/familia/recordatorios", (c) => c.html(renderRecordatoriosPage(c.env)));
+app.get("/familia/recordatorios", async (c) => c.html(await renderRecordatoriosPage(c.env)));
+app.post("/familia/recordatorio", async (c) => {
+  await addReminderFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/recordatorios");
+});
+app.post("/familia/recordatorio/:id/borrar", async (c) => {
+  await cancelReminder(c.env, c.req.param("id"));
+  return c.body(null, 204);
+});
 app.get("/familia/finanzas", (c) => c.html(renderFinanzasPage(c.env)));
 app.get("/familia/ninos", (c) => c.html(renderNinosPage(c.env)));
 app.post("/familia/tarea/:id/toggle", async (c) => {
@@ -743,6 +754,13 @@ export default {
     if (event.cron === "9,24,39 5 27 7 *") {
       const { runAvisosProgramados } = await import("./crons/avisoPrecio");
       await runAvisosProgramados(env).catch((e) => console.error("aviso:", e));
+      return;
+    }
+
+    // Recordatorios de la familia (member/reminders-cron.ts): tick */5 min
+    // dedicado, no debe disparar followups/watchdog/purgas.
+    if (event.cron === "*/5 * * * *") {
+      await runDueReminders(env).catch((e) => console.error("recordatorios:", e));
       return;
     }
 

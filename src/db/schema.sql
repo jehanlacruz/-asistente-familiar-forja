@@ -397,3 +397,21 @@ CREATE TABLE IF NOT EXISTS meal_plan (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- Recordatorios reales: avisan por Telegram a la hora exacta (remind_at, ms
+-- epoch). target_member NULL = se avisa a todos los de acceso completo.
+-- repeat NULL = una sola vez; 'diario'|'semanal'|'mensual' crea el siguiente
+-- pendiente al enviar éste (cron */5 min, ver src/index.ts scheduled()).
+CREATE TABLE IF NOT EXISTS reminders (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  remind_at INTEGER NOT NULL,
+  target_member TEXT,
+  repeat TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_by TEXT,
+  created_at INTEGER NOT NULL,
+  sent_at INTEGER,
+  FOREIGN KEY (target_member) REFERENCES family_members(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
