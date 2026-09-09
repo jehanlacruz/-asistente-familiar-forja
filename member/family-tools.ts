@@ -56,6 +56,8 @@ function memberSummary(m: FamilyMember) {
     tallaRopa: m.clothing_size,
     nacionalidad: m.nationality,
     preferenciasComida: m.food_preferences,
+    alergias: m.allergies,
+    objetivoNutricional: m.nutrition_goal,
     imc: bmi?.bmi ?? null,
     categoriaImc: bmi?.category ?? null,
   };
@@ -80,6 +82,11 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       estaturaCm: z.number().optional(),
       tallaRopa: z.string().optional(),
       nacionalidad: z.string().optional(),
+      alergias: z.string().optional().describe("Alergias o restricciones alimentarias, ej. 'lactosa, frutos secos'"),
+      objetivoNutricional: z
+        .enum(["bajar_peso", "mantener", "ganar_musculo", "comer_mas_sano"])
+        .optional()
+        .describe("Objetivo para el menú/ejercicio de este integrante"),
     }),
     execute: async (input) => {
       const total = await countMembers(d);
@@ -105,8 +112,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
 
       await d.run(
         `INSERT INTO family_members
-          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           input.nombre,
@@ -118,6 +125,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
           input.estaturaCm ?? null,
           input.tallaRopa ?? null,
           input.nacionalidad ?? null,
+          input.alergias ?? null,
+          input.objetivoNutricional ?? null,
           now,
           now,
         ],
@@ -181,6 +190,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       tallaRopa: z.string().optional(),
       nacionalidad: z.string().optional(),
       preferenciasComida: z.string().optional().describe("Platillos o gustos de comida"),
+      alergias: z.string().optional().describe("Alergias o restricciones alimentarias"),
+      objetivoNutricional: z.enum(["bajar_peso", "mantener", "ganar_musculo", "comer_mas_sano"]).optional(),
     }),
     execute: async ({ nombre, ...fields }) => {
       const check = await requireFullAccessSender(ctx);
@@ -198,6 +209,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         clothing_size: fields.tallaRopa,
         nationality: fields.nacionalidad,
         food_preferences: fields.preferenciasComida,
+        allergies: fields.alergias,
+        nutrition_goal: fields.objetivoNutricional,
       };
       for (const [col, val] of Object.entries(map)) {
         if (val !== undefined) {
@@ -377,22 +390,34 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
   });
 
   const definirMenuDia = tool({
-    description: "Define o actualiza el menú del día (desayuno/comida/cena). Si no se da la fecha, es la de hoy.",
+    description:
+      "Define o actualiza el menú de un día (desayuno/comida/cena), con ingredientes exactos y receta paso a paso opcionales para cada uno. Si no se da la fecha, es la de hoy. Para armar un menú semanal, llama esta tool una vez por cada uno de los 7 días.",
     inputSchema: z.object({
       fecha: z.string().optional().describe("YYYY-MM-DD, por default hoy"),
-      desayuno: z.string().optional(),
-      comida: z.string().optional(),
-      cena: z.string().optional(),
+      desayuno: z.string().optional().describe("Nombre corto del plato"),
+      desayunoReceta: z.string().optional().describe("Ingredientes exactos + receta paso a paso del desayuno"),
+      comida: z.string().optional().describe("Nombre corto del plato"),
+      comidaReceta: z.string().optional().describe("Ingredientes exactos + receta paso a paso de la comida"),
+      cena: z.string().optional().describe("Nombre corto del plato"),
+      cenaReceta: z.string().optional().describe("Ingredientes exactos + receta paso a paso de la cena"),
       notas: z.string().optional(),
     }),
-    execute: async ({ fecha, desayuno, comida, cena, notas }) => {
+    execute: async ({ fecha, desayuno, desayunoReceta, comida, comidaReceta, cena, cenaReceta, notas }) => {
       const date = fecha ?? todayInTZ(ctx.env);
       const existing = await d.first<{ date: string }>("SELECT date FROM meal_plan WHERE date = ?", [date]);
       const now = Date.now();
+      const map: Record<string, unknown> = {
+        breakfast: desayuno,
+        breakfast_recipe: desayunoReceta,
+        lunch: comida,
+        lunch_recipe: comidaReceta,
+        dinner: cena,
+        dinner_recipe: cenaReceta,
+        notes: notas,
+      };
       if (existing) {
         const sets: string[] = [];
         const params: unknown[] = [];
-        const map: Record<string, unknown> = { breakfast: desayuno, lunch: comida, dinner: cena, notes: notas };
         for (const [col, val] of Object.entries(map)) {
           if (val !== undefined) {
             sets.push(`${col} = ?`);
@@ -406,8 +431,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         }
       } else {
         await d.run(
-          `INSERT INTO meal_plan (date, breakfast, lunch, dinner, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [date, desayuno ?? null, comida ?? null, cena ?? null, notas ?? null, now, now],
+          `INSERT INTO meal_plan (date, breakfast, breakfast_recipe, lunch, lunch_recipe, dinner, dinner_recipe, notes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [date, desayuno ?? null, desayunoReceta ?? null, comida ?? null, comidaReceta ?? null, cena ?? null, cenaReceta ?? null, notas ?? null, now, now],
         );
       }
       return { ok: true, mensaje: `Menú del ${date} guardado.` };
@@ -415,12 +441,20 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
   });
 
   const consultarMenuDia = tool({
-    description: "Consulta el menú de un día. Si no se da la fecha, es la de hoy.",
+    description: "Consulta el menú de un día, con receta si la tiene. Si no se da la fecha, es la de hoy.",
     inputSchema: z.object({ fecha: z.string().optional().describe("YYYY-MM-DD, por default hoy") }),
     execute: async ({ fecha }) => {
       const date = fecha ?? todayInTZ(ctx.env);
-      const row = await d.first<{ breakfast: string | null; lunch: string | null; dinner: string | null; notes: string | null }>(
-        "SELECT breakfast, lunch, dinner, notes FROM meal_plan WHERE date = ?",
+      const row = await d.first<{
+        breakfast: string | null;
+        breakfast_recipe: string | null;
+        lunch: string | null;
+        lunch_recipe: string | null;
+        dinner: string | null;
+        dinner_recipe: string | null;
+        notes: string | null;
+      }>(
+        "SELECT breakfast, breakfast_recipe, lunch, lunch_recipe, dinner, dinner_recipe, notes FROM meal_plan WHERE date = ?",
         [date],
       );
       if (!row) return { fecha: date, definido: false };
@@ -428,9 +462,31 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         fecha: date,
         definido: true,
         desayuno: row.breakfast,
+        desayunoReceta: row.breakfast_recipe,
         comida: row.lunch,
+        comidaReceta: row.lunch_recipe,
         cena: row.dinner,
+        cenaReceta: row.dinner_recipe,
         notas: row.notes,
+      };
+    },
+  });
+
+  const consultarPerfilNutricionalFamilia = tool({
+    description:
+      "Trae el perfil nutricional de toda la familia (edad, alergias, objetivo, gustos de comida de cada quien) — úsalo antes de armar un menú semanal para que sea de verdad personalizado, no genérico.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const members = await listMembers(d);
+      return {
+        integrantes: members.map((m) => ({
+          nombre: m.name,
+          edad: ageFromBirthdate(m.birthdate),
+          alergias: m.allergies,
+          objetivoNutricional: m.nutrition_goal,
+          preferenciasComida: m.food_preferences,
+          nacionalidad: m.nationality,
+        })),
       };
     },
   });
@@ -554,6 +610,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     marcarProductoComprado,
     definirMenuDia,
     consultarMenuDia,
+    consultarPerfilNutricionalFamilia,
     unirseConEnlace,
   };
 }

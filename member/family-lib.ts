@@ -15,6 +15,8 @@ export interface FamilyMember {
   clothing_size: string | null;
   nationality: string | null;
   food_preferences: string | null;
+  allergies: string | null;
+  nutrition_goal: string | null;
   created_at: number;
   updated_at: number;
 }

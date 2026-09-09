@@ -344,6 +344,8 @@ CREATE TABLE IF NOT EXISTS family_members (
   clothing_size TEXT,
   nationality TEXT,
   food_preferences TEXT,
+  allergies TEXT,
+  nutrition_goal TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -388,11 +390,16 @@ CREATE TABLE IF NOT EXISTS shopping_items (
 CREATE INDEX IF NOT EXISTS idx_shopping_status ON shopping_items(status);
 
 -- Un renglón por día (upsert por fecha).
+-- *_recipe: ingredientes exactos + receta paso a paso (texto libre generado
+-- por el agente), aparte del nombre corto del plato.
 CREATE TABLE IF NOT EXISTS meal_plan (
   date TEXT PRIMARY KEY,
   breakfast TEXT,
+  breakfast_recipe TEXT,
   lunch TEXT,
+  lunch_recipe TEXT,
   dinner TEXT,
+  dinner_recipe TEXT,
   notes TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL

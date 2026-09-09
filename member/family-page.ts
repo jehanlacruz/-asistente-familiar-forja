@@ -101,8 +101,8 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
   const now = Date.now();
   await d.run(
     `INSERT INTO family_members
-      (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newId(),
       nombre,
@@ -114,6 +114,8 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
       form.tallaRopa || null,
       form.nacionalidad || null,
       form.preferenciasComida || null,
+      form.alergias || null,
+      form.objetivoNutricional || null,
       now,
       now,
     ],
@@ -125,7 +127,7 @@ export async function updateMemberFromForm(env: Env, id: string, form: Record<st
   await d.run(
     `UPDATE family_members SET
       name = ?, role = ?, access_level = ?, birthdate = ?, weight_kg = ?, height_cm = ?,
-      clothing_size = ?, nationality = ?, food_preferences = ?, updated_at = ?
+      clothing_size = ?, nationality = ?, food_preferences = ?, allergies = ?, nutrition_goal = ?, updated_at = ?
      WHERE id = ?`,
     [
       (form.nombre || "").trim(),
@@ -137,6 +139,8 @@ export async function updateMemberFromForm(env: Env, id: string, form: Record<st
       form.tallaRopa || null,
       form.nacionalidad || null,
       form.preferenciasComida || null,
+      form.alergias || null,
+      form.objetivoNutricional || null,
       Date.now(),
       id,
     ],
@@ -234,6 +238,18 @@ function comingSoonPage(env: Env, key: string, icon: string, title: string, desc
 
 // ── Tarjetas y piezas reusables ────────────────────────────────────────
 
+const GOAL_LABEL: Record<string, string> = {
+  bajar_peso: "Bajar de peso",
+  mantener: "Mantenerse",
+  ganar_musculo: "Ganar músculo",
+  comer_mas_sano: "Comer más sano",
+};
+
+function goalOptions(selected: string | null | undefined): string {
+  const opts = [["", "Sin definir"], ...Object.entries(GOAL_LABEL)];
+  return opts.map(([v, label]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${esc(label)}</option>`).join("");
+}
+
 function memberCard(m: FamilyMember): string {
   const edad = ageFromBirthdate(m.birthdate);
   const bmi = bmiInfo(m.weight_kg, m.height_cm);
@@ -245,6 +261,8 @@ function memberCard(m: FamilyMember): string {
   if (m.clothing_size) rows.push(`<div class="row"><span>Talla</span><b>${esc(m.clothing_size)}</b></div>`);
   if (m.nationality) rows.push(`<div class="row"><span>Nacionalidad</span><b>${esc(m.nationality)}</b></div>`);
   if (m.food_preferences) rows.push(`<div class="row"><span>Le gusta</span><b>${esc(m.food_preferences)}</b></div>`);
+  if (m.allergies) rows.push(`<div class="row"><span>Alergias</span><b>${esc(m.allergies)}</b></div>`);
+  if (m.nutrition_goal) rows.push(`<div class="row"><span>Objetivo</span><b>${esc(GOAL_LABEL[m.nutrition_goal] ?? m.nutrition_goal)}</b></div>`);
   const badge =
     m.access_level === "full"
       ? m.telegram_chat_id
@@ -374,6 +392,8 @@ export async function renderIntegrantesPage(env: Env): Promise<string> {
         <input type="text" name="tallaRopa" placeholder="Talla de ropa">
         <input type="text" name="nacionalidad" placeholder="Nacionalidad">
         <input type="text" name="preferenciasComida" placeholder="Le gusta comer…">
+        <input type="text" name="alergias" placeholder="Alergias / restricciones">
+        <select name="objetivoNutricional">${goalOptions(null)}</select>
         <button type="submit">Guardar integrante</button>
       </form>
     </details>`;
@@ -414,22 +434,73 @@ export async function renderTareasPage(env: Env): Promise<string> {
 
 // ── Página: Menú de hoy ─────────────────────────────────────────────────
 
+function addDaysStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+function dayLabel(dateStr: string, offset: number): string {
+  if (offset === 0) return "Hoy";
+  if (offset === 1) return "Mañana";
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const weekday = new Intl.DateTimeFormat("es-ES", { weekday: "long", timeZone: "UTC" }).format(dt);
+  return weekday.charAt(0).toUpperCase() + weekday.slice(1);
+}
+
+function mealBlock(icon: string, label: string, dish: string | null, recipe: string | null): string {
+  if (!dish && !recipe) return `<div class="meal-slot empty"><span class="meal-icon">${icon}</span><span class="meal-empty">${esc(label)} sin definir</span></div>`;
+  return `<div class="meal-slot">
+    <span class="meal-icon">${icon}</span>
+    <div class="meal-body">
+      <b>${esc(dish || label)}</b>
+      ${recipe ? `<details><summary>Ver ingredientes y receta</summary><div class="recipe">${esc(recipe).replace(/\n/g, "<br>")}</div></details>` : ""}
+    </div>
+  </div>`;
+}
+
 export async function renderMenuPage(env: Env): Promise<string> {
   const today = todayInTZ(env);
-  const menu = await db(env).first<{ breakfast: string | null; lunch: string | null; dinner: string | null }>(
+  const d = db(env);
+  const todayRow = await d.first<{ breakfast: string | null; lunch: string | null; dinner: string | null }>(
     "SELECT breakfast, lunch, dinner FROM meal_plan WHERE date = ?",
     [today],
   );
-  const body = `<section class="panel">
-    <h2>🍽️ Menú de hoy</h2>
-    <form class="menu-form" method="post" action="/familia/menu">
-      <label>Desayuno<input type="text" name="desayuno" value="${esc(menu?.breakfast || "")}"></label>
-      <label>Comida<input type="text" name="comida" value="${esc(menu?.lunch || "")}"></label>
-      <label>Cena<input type="text" name="cena" value="${esc(menu?.dinner || "")}"></label>
-      <button type="submit">Guardar menú de hoy</button>
-    </form>
-    <p class="soon-note">🔜 Próximamente: cuestionario de gustos/alergias por integrante y menú semanal generado con recetas paso a paso.</p>
-  </section>`;
+
+  type MealRow = { date: string; breakfast: string | null; breakfast_recipe: string | null; lunch: string | null; lunch_recipe: string | null; dinner: string | null; dinner_recipe: string | null };
+  const weekDates = Array.from({ length: 7 }, (_, i) => addDaysStr(today, i));
+  const rows = await d.all<MealRow>(
+    `SELECT date, breakfast, breakfast_recipe, lunch, lunch_recipe, dinner, dinner_recipe FROM meal_plan WHERE date IN (${weekDates.map(() => "?").join(",")})`,
+    weekDates,
+  );
+  const byDate = new Map(rows.map((r) => [r.date, r]));
+
+  const dayCard = (date: string, offset: number) => {
+    const r = byDate.get(date);
+    return `<div class="day-card">
+      <h4>${esc(dayLabel(date, offset))} <span class="day-date">${date.slice(8)}/${date.slice(5, 7)}</span></h4>
+      ${mealBlock("🌅", "Desayuno", r?.breakfast ?? null, r?.breakfast_recipe ?? null)}
+      ${mealBlock("🍲", "Comida", r?.lunch ?? null, r?.lunch_recipe ?? null)}
+      ${mealBlock("🌙", "Cena", r?.dinner ?? null, r?.dinner_recipe ?? null)}
+    </div>`;
+  };
+
+  const body = `
+    <section class="panel">
+      <h2>✏️ Editar menú de hoy (rápido)</h2>
+      <form class="menu-form" method="post" action="/familia/menu">
+        <label>Desayuno<input type="text" name="desayuno" value="${esc(todayRow?.breakfast || "")}"></label>
+        <label>Comida<input type="text" name="comida" value="${esc(todayRow?.lunch || "")}"></label>
+        <label>Cena<input type="text" name="cena" value="${esc(todayRow?.dinner || "")}"></label>
+        <button type="submit">Guardar</button>
+      </form>
+      <p class="soon-note">Para ingredientes y receta paso a paso pídeselo al bot por chat: "arma el menú de la semana" — usa los gustos, alergias y objetivo de cada integrante.</p>
+    </section>
+    <section class="panel">
+      <h2>📅 Semana</h2>
+      <div class="week-grid">${weekDates.map((date, i) => dayCard(date, i)).join("")}</div>
+    </section>`;
   return layout(env, "Menú", "menu", body);
 }
 
@@ -538,6 +609,8 @@ export async function renderEditMemberPage(env: Env, id: string): Promise<string
       <label class="field">Talla de ropa<input type="text" name="tallaRopa" value="${esc(m.clothing_size ?? "")}"></label>
       <label class="field">Nacionalidad<input type="text" name="nacionalidad" value="${esc(m.nationality ?? "")}"></label>
       <label class="field">Le gusta comer<input type="text" name="preferenciasComida" value="${esc(m.food_preferences ?? "")}"></label>
+      <label class="field">Alergias / restricciones<input type="text" name="alergias" value="${esc(m.allergies ?? "")}"></label>
+      <label class="field">Objetivo nutricional<select name="objetivoNutricional">${goalOptions(m.nutrition_goal)}</select></label>
       <div class="btn-row">
         <button type="submit">Guardar cambios</button>
         <a class="btn-secondary" href="/familia/integrantes">Cancelar</a>
@@ -558,9 +631,9 @@ const SHARED_STYLE = `
   body { margin:0; font-family:-apple-system,system-ui,sans-serif; background:#f3f4f8; color:#1a1f3c; }
   @media (prefers-color-scheme: dark) {
     body { background:#0e1116; color:#e8eaf2; }
-    .card, .panel, nav, .hub-card, .add-form, .add-member form, .menu-form, select, input, .field input { background:#171b24 !important; border-color:#2a2f3c !important; color:#e8eaf2 !important; }
-    .row span, .meta, .role, .hub-card p { color:#9aa0b4 !important; }
-    li { border-bottom-color:#242938 !important; }
+    .card, .panel, nav, .hub-card, .add-form, .add-member form, .menu-form, select, input, .field input, .field select, .day-card { background:#171b24 !important; border-color:#2a2f3c !important; color:#e8eaf2 !important; }
+    .row span, .meta, .role, .hub-card p, .day-date, .recipe { color:#9aa0b4 !important; }
+    li, .meal-slot { border-bottom-color:#242938 !important; border-top-color:#242938 !important; }
   }
   header { padding:22px 20px 10px; text-align:center; }
   header h1 { margin:0; font-size:1.35rem; }
@@ -584,6 +657,17 @@ const SHARED_STYLE = `
   .soon-list li { padding:5px 0; font-size:.88rem; }
   .soon-list li::before { content:"— "; color:#4a6cf7; }
   .soon-note { margin-top:12px; font-size:.78rem; color:#9aa0b4; }
+  .week-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
+  .day-card { border:1px solid #e5e7eb; border-radius:12px; padding:14px; }
+  .day-card h4 { margin:0 0 10px; font-size:.92rem; display:flex; justify-content:space-between; }
+  .day-date { color:#9aa0b4; font-weight:400; font-size:.8rem; }
+  .meal-slot { display:flex; gap:8px; padding:6px 0; border-top:1px solid #f4f4f7; font-size:.85rem; }
+  .day-card .meal-slot:first-of-type { border-top:none; }
+  .meal-icon { flex:none; }
+  .meal-body b { display:block; }
+  .meal-slot.empty .meal-empty { color:#c2c6d1; font-style:italic; }
+  .recipe { margin-top:6px; font-size:.8rem; color:#6b7280; line-height:1.5; white-space:pre-wrap; }
+  details summary { cursor:pointer; font-size:.78rem; color:#4a6cf7; margin-top:4px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; margin-bottom:10px; }
   .card { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:16px; position:relative; }
   .card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -627,7 +711,7 @@ const SHARED_STYLE = `
   .menu-form label { display:flex; flex-direction:column; gap:4px; font-size:.78rem; color:#9aa0b4; }
   .menu-form input { border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; font-size:.9rem; color:#1a1f3c; }
   .field { display:flex; flex-direction:column; gap:4px; font-size:.78rem; color:#9aa0b4; margin-bottom:12px; }
-  .field input { padding:9px 10px; font-size:.92rem; color:#1a1f3c; }
+  .field input, .field select { padding:9px 10px; font-size:.92rem; color:#1a1f3c; border:1px solid #e5e7eb; border-radius:8px; }
   .chk { display:flex; align-items:center; gap:8px; font-size:.88rem; margin-bottom:14px; }
   .btn-row { display:flex; gap:10px; margin-top:6px; }
   .btn-row button, .btn-secondary { border:none; background:#4a6cf7; color:#fff; border-radius:8px; padding:9px 16px; font-size:.88rem; cursor:pointer; text-decoration:none; }
