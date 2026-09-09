@@ -1,0 +1,485 @@
+// member/family-tools.ts — tools de la familia La Cruz: perfil de cada
+// integrante, enlaces de invitación y tareas de la casa. Vive en member/, así
+// que forjabot update NUNCA la toca. Se cargan desde member/tools.local.ts.
+import { tool } from "ai";
+import { z } from "zod";
+import type { MemberToolCtx } from "../src/tools/member";
+import {
+  db,
+  newId,
+  todayInTZ,
+  getSenderChannelUserId,
+  findMemberByChatId,
+  findMemberByName,
+  listMembers,
+  countMembers,
+  ageFromBirthdate,
+  bmiInfo,
+  getBotUsername,
+  isChorePending,
+  type FamilyMember,
+  type Chore,
+} from "./family-lib";
+
+async function requireFullAccessSender(
+  ctx: MemberToolCtx,
+): Promise<{ ok: true; member: FamilyMember } | { ok: false; error: string }> {
+  const d = db(ctx.env);
+  const chatId = await getSenderChannelUserId(d, ctx.getConversationId());
+  if (!chatId) return { ok: false, error: "No pude identificar quién escribe." };
+  const member = await findMemberByChatId(d, chatId);
+  if (!member || member.access_level !== "full") {
+    return {
+      ok: false,
+      error:
+        "Quien escribe no tiene acceso completo de la familia. Solo papá, mamá o la hija mayor pueden hacer esto.",
+    };
+  }
+  return { ok: true, member };
+}
+
+function memberSummary(m: FamilyMember) {
+  const edad = ageFromBirthdate(m.birthdate);
+  const bmi = bmiInfo(m.weight_kg, m.height_cm);
+  return {
+    nombre: m.name,
+    rol: m.role,
+    accesoCompleto: m.access_level === "full",
+    conectado: m.telegram_chat_id != null,
+    fechaNacimiento: m.birthdate,
+    edad,
+    pesoKg: m.weight_kg,
+    estaturaCm: m.height_cm,
+    tallaRopa: m.clothing_size,
+    nacionalidad: m.nationality,
+    preferenciasComida: m.food_preferences,
+    imc: bmi?.bmi ?? null,
+    categoriaImc: bmi?.category ?? null,
+  };
+}
+
+export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
+  const d = db(ctx.env);
+
+  const registrarIntegranteFamilia = tool({
+    description:
+      "Registra a un nuevo integrante de la familia La Cruz (perfil). Si la familia todavía no tiene a nadie registrado, la primera persona que escribe queda registrada automáticamente como administrador (acceso completo) sin pedir permiso. Después de eso, solo alguien con acceso completo (papá, mamá o hija mayor) puede registrar a los demás.",
+    inputSchema: z.object({
+      nombre: z.string().describe("Nombre del integrante, ej. 'Ara' o 'Adiel'"),
+      rol: z.string().describe("papá | mamá | hijo | hija | hija mayor | hijo menor…"),
+      accesoCompleto: z
+        .boolean()
+        .describe(
+          "true si va a chatear directo con el bot (adultos, hija mayor). false si es un menor cuyo perfil llevan los adultos.",
+        ),
+      fechaNacimiento: z.string().optional().describe("YYYY-MM-DD"),
+      pesoKg: z.number().optional(),
+      estaturaCm: z.number().optional(),
+      tallaRopa: z.string().optional(),
+      nacionalidad: z.string().optional(),
+    }),
+    execute: async (input) => {
+      const total = await countMembers(d);
+      const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+
+      if (total > 0) {
+        // Ya hay familia: solo un miembro de acceso completo puede registrar a otros.
+        const check = await requireFullAccessSender(ctx);
+        if (!check.ok) return { error: check.error };
+      }
+
+      const existing = await findMemberByName(d, input.nombre);
+      if (existing)
+        return {
+          error: `Ya existe un integrante que coincide con "${input.nombre}" (registrado como "${existing.name}"). No crees uno nuevo — usa actualizarDatosIntegrante con nombre="${existing.name}" para completar o corregir sus datos.`,
+        };
+
+      const now = Date.now();
+      const id = newId();
+      // Bootstrap: si es el primer integrante de la familia y accesoCompleto,
+      // lo conectamos directo con el chat_id de quien está escribiendo.
+      const chatId = total === 0 && input.accesoCompleto ? senderChatId : null;
+
+      await d.run(
+        `INSERT INTO family_members
+          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          input.nombre,
+          input.rol,
+          input.accesoCompleto ? "full" : "managed",
+          chatId,
+          input.fechaNacimiento ?? null,
+          input.pesoKg ?? null,
+          input.estaturaCm ?? null,
+          input.tallaRopa ?? null,
+          input.nacionalidad ?? null,
+          now,
+          now,
+        ],
+      );
+      return {
+        ok: true,
+        id,
+        conectado: chatId != null,
+        mensaje:
+          chatId != null
+            ? `${input.nombre} quedó registrado y conectado.`
+            : input.accesoCompleto
+              ? `${input.nombre} quedó registrado con acceso completo. Génerale un enlace de invitación con generarEnlaceInvitacion para que se conecte desde su propio Telegram.`
+              : `${input.nombre} quedó registrado. Como no tiene acceso directo, quien tenga acceso completo puede actualizar sus datos cuando haga falta.`,
+      };
+    },
+  });
+
+  const generarEnlaceInvitacion = tool({
+    description:
+      "Genera un enlace de invitación de un solo uso para que un integrante con accesoCompleto (ya registrado, pero sin conectar todavía) se una al bot desde su propio Telegram.",
+    inputSchema: z.object({
+      nombre: z.string().describe("Nombre exacto del integrante ya registrado"),
+    }),
+    execute: async ({ nombre }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+      if (member.access_level !== "full")
+        return { error: `${nombre} no tiene acceso completo — no necesita conectarse por su cuenta.` };
+      if (member.telegram_chat_id)
+        return { error: `${nombre} ya está conectado.` };
+
+      const username = await getBotUsername(ctx.env);
+      if (!username) return { error: "No pude obtener el username del bot en Telegram." };
+
+      const token = newId().replace(/-/g, "").slice(0, 24);
+      await d.run(
+        `INSERT INTO family_invites (token, member_id, created_by, created_at) VALUES (?, ?, ?, ?)`,
+        [token, member.id, check.member.id, Date.now()],
+      );
+
+      return {
+        ok: true,
+        enlace: `https://t.me/${username}?start=${token}`,
+        mensaje: `Mándale este enlace a ${nombre} por su cuenta — al abrirlo en Telegram y tocar "Iniciar", queda conectado automáticamente.`,
+      };
+    },
+  });
+
+  const actualizarDatosIntegrante = tool({
+    description:
+      "Actualiza el perfil de un integrante ya registrado (peso, estatura, talla de ropa, fecha de nacimiento, nacionalidad, preferencias de comida). Cualquiera con acceso completo puede actualizar a cualquier integrante, incluido a sí mismo.",
+    inputSchema: z.object({
+      nombre: z.string(),
+      fechaNacimiento: z.string().optional().describe("YYYY-MM-DD"),
+      pesoKg: z.number().optional(),
+      estaturaCm: z.number().optional(),
+      tallaRopa: z.string().optional(),
+      nacionalidad: z.string().optional(),
+      preferenciasComida: z.string().optional().describe("Platillos o gustos de comida"),
+    }),
+    execute: async ({ nombre, ...fields }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      const map: Record<string, unknown> = {
+        birthdate: fields.fechaNacimiento,
+        weight_kg: fields.pesoKg,
+        height_cm: fields.estaturaCm,
+        clothing_size: fields.tallaRopa,
+        nationality: fields.nacionalidad,
+        food_preferences: fields.preferenciasComida,
+      };
+      for (const [col, val] of Object.entries(map)) {
+        if (val !== undefined) {
+          sets.push(`${col} = ?`);
+          params.push(val);
+        }
+      }
+      if (sets.length === 0) return { error: "No mandaste ningún dato para actualizar." };
+      sets.push("updated_at = ?");
+      params.push(Date.now(), member.id);
+
+      await d.run(`UPDATE family_members SET ${sets.join(", ")} WHERE id = ?`, params);
+      return { ok: true, mensaje: `Datos de ${nombre} actualizados.` };
+    },
+  });
+
+  const consultarIntegrante = tool({
+    description:
+      "Consulta el perfil completo de un integrante (edad calculada, IMC calculado, talla, nacionalidad, preferencias de comida). Útil antes de sugerir alimentación o actividad física.",
+    inputSchema: z.object({ nombre: z.string() }),
+    execute: async ({ nombre }) => {
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+      return memberSummary(member);
+    },
+  });
+
+  const listarFamilia = tool({
+    description: "Lista a todos los integrantes registrados de la familia con su perfil resumido.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const members = await listMembers(d);
+      return { integrantes: members.map(memberSummary) };
+    },
+  });
+
+  const registrarTareaCasa = tool({
+    description:
+      "Registra una tarea de la casa o una rutina de ejercicio, opcionalmente asignada a un integrante. 'diaria' vuelve a aparecer pendiente cada día aunque se haya marcado hecha; 'puntual' es de una sola vez.",
+    inputSchema: z.object({
+      titulo: z.string(),
+      asignadoA: z.string().optional().describe("Nombre del integrante responsable"),
+      fechaLimite: z.string().optional().describe("YYYY-MM-DD, solo para tareas puntuales"),
+      tipo: z.enum(["diaria", "puntual"]).optional().default("puntual"),
+      categoria: z.enum(["tarea", "ejercicio"]).optional().default("tarea"),
+    }),
+    execute: async ({ titulo, asignadoA, fechaLimite, tipo, categoria }) => {
+      let assignedId: string | null = null;
+      if (asignadoA) {
+        const member = await findMemberByName(d, asignadoA);
+        if (!member) return { error: `No encontré a ningún integrante llamado ${asignadoA}.` };
+        assignedId = member.id;
+      }
+      const now = Date.now();
+      const id = newId();
+      await d.run(
+        `INSERT INTO household_chores (id, title, assigned_to, status, due_date, kind, category, created_at, updated_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+        [id, titulo, assignedId, fechaLimite ?? null, tipo, categoria, now, now],
+      );
+      return { ok: true, id, mensaje: `${categoria === "ejercicio" ? "Rutina" : "Tarea"} "${titulo}" registrada (${tipo}).` };
+    },
+  });
+
+  const listarTareasCasa = tool({
+    description:
+      "Lista tareas de la casa y/o rutinas de ejercicio, con filtros opcionales de tipo (diaria/puntual), categoría (tarea/ejercicio) y estado.",
+    inputSchema: z.object({
+      soloPendientes: z.boolean().optional().default(true),
+      tipo: z.enum(["diaria", "puntual"]).optional(),
+      categoria: z.enum(["tarea", "ejercicio"]).optional(),
+      asignadoA: z.string().optional().describe("Filtrar solo lo asignado a este integrante"),
+    }),
+    execute: async ({ soloPendientes, tipo, categoria, asignadoA }) => {
+      const rows = await d.all<Chore>(
+        "SELECT id, title, assigned_to, status, due_date, kind, category, created_at, updated_at FROM household_chores ORDER BY created_at ASC",
+      );
+      const members = await listMembers(d);
+      const nameById = new Map(members.map((m) => [m.id, m.name]));
+      const today = todayInTZ(ctx.env);
+
+      let filtered = rows;
+      if (soloPendientes) filtered = filtered.filter((r) => isChorePending(r, ctx.env, today));
+      if (tipo) filtered = filtered.filter((r) => r.kind === tipo);
+      if (categoria) filtered = filtered.filter((r) => r.category === categoria);
+      if (asignadoA) {
+        const member = await findMemberByName(d, asignadoA);
+        if (!member) return { error: `No encontré a ningún integrante llamado ${asignadoA}.` };
+        filtered = filtered.filter((r) => r.assigned_to === member.id);
+      }
+
+      return {
+        tareas: filtered.map((r) => ({
+          id: r.id,
+          titulo: r.title,
+          asignadoA: r.assigned_to ? (nameById.get(r.assigned_to) ?? null) : null,
+          estado: isChorePending(r, ctx.env, today) ? "pending" : r.status,
+          tipo: r.kind,
+          categoria: r.category,
+          fechaLimite: r.due_date,
+        })),
+      };
+    },
+  });
+
+  const completarTareaCasa = tool({
+    description: "Marca una tarea de la casa o rutina de ejercicio como hecha por hoy, por su título (o parte de él).",
+    inputSchema: z.object({ titulo: z.string() }),
+    execute: async ({ titulo }) => {
+      const today = todayInTZ(ctx.env);
+      const candidates = await d.all<Chore>(
+        "SELECT id, title, assigned_to, status, due_date, kind, category, created_at, updated_at FROM household_chores WHERE title LIKE ? ORDER BY created_at ASC",
+        [`%${titulo}%`],
+      );
+      const match = candidates.find((c) => isChorePending(c, ctx.env, today));
+      if (!match) return { error: `No encontré una tarea pendiente que coincida con "${titulo}".` };
+      await d.run("UPDATE household_chores SET status = 'done', updated_at = ? WHERE id = ?", [
+        Date.now(),
+        match.id,
+      ]);
+      return { ok: true, mensaje: `"${match.title}" marcada como hecha.` };
+    },
+  });
+
+  const agregarProductoCompra = tool({
+    description: "Agrega un producto a la lista de la compra de la casa.",
+    inputSchema: z.object({
+      nombre: z.string(),
+      categoria: z.string().optional().describe("ej. 'lácteos', 'limpieza', 'frutas'"),
+    }),
+    execute: async ({ nombre, categoria }) => {
+      const existing = await d.first<{ id: string }>(
+        "SELECT id FROM shopping_items WHERE status = 'pending' AND lower(name) = lower(?)",
+        [nombre],
+      );
+      if (existing) return { error: `"${nombre}" ya está en la lista.` };
+      const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const sender = senderChatId ? await findMemberByChatId(d, senderChatId) : null;
+      const now = Date.now();
+      const id = newId();
+      await d.run(
+        `INSERT INTO shopping_items (id, name, category, status, added_by, created_at, updated_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+        [id, nombre, categoria ?? null, sender?.id ?? null, now, now],
+      );
+      return { ok: true, mensaje: `"${nombre}" agregado a la lista de la compra.` };
+    },
+  });
+
+  const listarListaCompra = tool({
+    description: "Lista la lista de la compra: lo que falta comprar y, si se pide, también lo ya comprado.",
+    inputSchema: z.object({ incluirComprados: z.boolean().optional().default(false) }),
+    execute: async ({ incluirComprados }) => {
+      const rows = await d.all<{ id: string; name: string; category: string | null; status: string }>(
+        incluirComprados
+          ? "SELECT id, name, category, status FROM shopping_items ORDER BY status ASC, created_at ASC"
+          : "SELECT id, name, category, status FROM shopping_items WHERE status = 'pending' ORDER BY created_at ASC",
+      );
+      return {
+        productos: rows.map((r) => ({ id: r.id, nombre: r.name, categoria: r.category, comprado: r.status === "bought" })),
+      };
+    },
+  });
+
+  const marcarProductoComprado = tool({
+    description: "Marca uno o varios productos de la lista de la compra como ya comprados, por nombre (o parte de él).",
+    inputSchema: z.object({ nombre: z.string() }),
+    execute: async ({ nombre }) => {
+      const row = await d.first<{ id: string; name: string }>(
+        "SELECT id, name FROM shopping_items WHERE status = 'pending' AND name LIKE ? ORDER BY created_at ASC LIMIT 1",
+        [`%${nombre}%`],
+      );
+      if (!row) return { error: `No encontré "${nombre}" pendiente en la lista.` };
+      await d.run("UPDATE shopping_items SET status = 'bought', updated_at = ? WHERE id = ?", [Date.now(), row.id]);
+      return { ok: true, mensaje: `"${row.name}" marcado como comprado.` };
+    },
+  });
+
+  const definirMenuDia = tool({
+    description: "Define o actualiza el menú del día (desayuno/comida/cena). Si no se da la fecha, es la de hoy.",
+    inputSchema: z.object({
+      fecha: z.string().optional().describe("YYYY-MM-DD, por default hoy"),
+      desayuno: z.string().optional(),
+      comida: z.string().optional(),
+      cena: z.string().optional(),
+      notas: z.string().optional(),
+    }),
+    execute: async ({ fecha, desayuno, comida, cena, notas }) => {
+      const date = fecha ?? todayInTZ(ctx.env);
+      const existing = await d.first<{ date: string }>("SELECT date FROM meal_plan WHERE date = ?", [date]);
+      const now = Date.now();
+      if (existing) {
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        const map: Record<string, unknown> = { breakfast: desayuno, lunch: comida, dinner: cena, notes: notas };
+        for (const [col, val] of Object.entries(map)) {
+          if (val !== undefined) {
+            sets.push(`${col} = ?`);
+            params.push(val);
+          }
+        }
+        if (sets.length) {
+          sets.push("updated_at = ?");
+          params.push(now, date);
+          await d.run(`UPDATE meal_plan SET ${sets.join(", ")} WHERE date = ?`, params);
+        }
+      } else {
+        await d.run(
+          `INSERT INTO meal_plan (date, breakfast, lunch, dinner, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [date, desayuno ?? null, comida ?? null, cena ?? null, notas ?? null, now, now],
+        );
+      }
+      return { ok: true, mensaje: `Menú del ${date} guardado.` };
+    },
+  });
+
+  const consultarMenuDia = tool({
+    description: "Consulta el menú de un día. Si no se da la fecha, es la de hoy.",
+    inputSchema: z.object({ fecha: z.string().optional().describe("YYYY-MM-DD, por default hoy") }),
+    execute: async ({ fecha }) => {
+      const date = fecha ?? todayInTZ(ctx.env);
+      const row = await d.first<{ breakfast: string | null; lunch: string | null; dinner: string | null; notes: string | null }>(
+        "SELECT breakfast, lunch, dinner, notes FROM meal_plan WHERE date = ?",
+        [date],
+      );
+      if (!row) return { fecha: date, definido: false };
+      return {
+        fecha: date,
+        definido: true,
+        desayuno: row.breakfast,
+        comida: row.lunch,
+        cena: row.dinner,
+        notas: row.notes,
+      };
+    },
+  });
+
+  const unirseConEnlace = tool({
+    description:
+      "Conecta a quien escribe con su perfil de familia usando el código de un enlace de invitación (mensajes que empiezan con '/start '). Llama esta tool SIEMPRE que el mensaje sea justo eso, antes de responder cualquier otra cosa.",
+    inputSchema: z.object({ token: z.string().describe("El código después de '/start '") }),
+    execute: async ({ token }) => {
+      const invite = await d.first<{ token: string; member_id: string; used_at: number | null }>(
+        "SELECT * FROM family_invites WHERE token = ?",
+        [token],
+      );
+      if (!invite) return { error: "Ese enlace no es válido. Pide uno nuevo a quien te lo mandó." };
+      if (invite.used_at) return { error: "Ese enlace ya se usó. Pide uno nuevo." };
+
+      const chatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      if (!chatId) return { error: "No pude identificar tu chat." };
+
+      const member = await d.first<FamilyMember>("SELECT * FROM family_members WHERE id = ?", [
+        invite.member_id,
+      ]);
+      if (!member) return { error: "El integrante de este enlace ya no existe." };
+
+      await d.run("UPDATE family_members SET telegram_chat_id = ?, updated_at = ? WHERE id = ?", [
+        chatId,
+        Date.now(),
+        member.id,
+      ]);
+      await d.run("UPDATE family_invites SET used_at = ? WHERE token = ?", [Date.now(), token]);
+
+      return {
+        ok: true,
+        mensaje: `¡Listo, ${member.name}! Quedaste conectado como parte de la familia. Ya puedo ayudarte con tareas de la casa y con tu perfil.`,
+      };
+    },
+  });
+
+  return {
+    registrarIntegranteFamilia,
+    generarEnlaceInvitacion,
+    actualizarDatosIntegrante,
+    consultarIntegrante,
+    listarFamilia,
+    registrarTareaCasa,
+    listarTareasCasa,
+    completarTareaCasa,
+    agregarProductoCompra,
+    listarListaCompra,
+    marcarProductoComprado,
+    definirMenuDia,
+    consultarMenuDia,
+    unirseConEnlace,
+  };
+}

@@ -1,0 +1,479 @@
+// member/family-page.ts — resumen web EDITABLE de la familia La Cruz
+// ("/familia"). Vive en member/, así que forjabot update NUNCA la toca. Se
+// monta desde src/index.ts (rutas finas, ver ese archivo) porque una ruta
+// HTTP nueva no tiene otro punto de extensión — protegida con el mismo
+// Basic Auth del panel.
+import {
+  db,
+  newId,
+  listMembers,
+  findMemberByName,
+  ageFromBirthdate,
+  bmiInfo,
+  todayInTZ,
+  isChorePending,
+  type FamilyMember,
+  type Chore,
+} from "./family-lib";
+import type { Env } from "../src/env";
+
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+// ── Acciones (llamadas desde las rutas en src/index.ts) ───────────────────
+
+export async function toggleChore(env: Env, id: string): Promise<void> {
+  const d = db(env);
+  const chore = await d.first<Chore>(
+    "SELECT id, title, assigned_to, status, due_date, kind, category, created_at, updated_at FROM household_chores WHERE id = ?",
+    [id],
+  );
+  if (!chore) return;
+  const pending = isChorePending(chore, env, todayInTZ(env));
+  await d.run("UPDATE household_chores SET status = ?, updated_at = ? WHERE id = ?", [
+    pending ? "done" : "pending",
+    Date.now(),
+    id,
+  ]);
+}
+
+export async function toggleShoppingItem(env: Env, id: string): Promise<void> {
+  const d = db(env);
+  const item = await d.first<{ status: string }>("SELECT status FROM shopping_items WHERE id = ?", [id]);
+  if (!item) return;
+  await d.run("UPDATE shopping_items SET status = ?, updated_at = ? WHERE id = ?", [
+    item.status === "pending" ? "bought" : "pending",
+    Date.now(),
+    id,
+  ]);
+}
+
+export async function deleteChore(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM household_chores WHERE id = ?", [id]);
+}
+
+export async function deleteShoppingItem(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM shopping_items WHERE id = ?", [id]);
+}
+
+export async function addChoreFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const titulo = (form.titulo || "").trim();
+  if (!titulo) return;
+  const d = db(env);
+  let assignedId: string | null = null;
+  if (form.asignado) {
+    const m = await findMemberByName(d, form.asignado);
+    assignedId = m?.id ?? null;
+  }
+  const now = Date.now();
+  await d.run(
+    `INSERT INTO household_chores (id, title, assigned_to, status, due_date, kind, category, created_at, updated_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+    [newId(), titulo, assignedId, form.fecha || null, form.kind === "diaria" ? "diaria" : "puntual", form.category === "ejercicio" ? "ejercicio" : "tarea", now, now],
+  );
+}
+
+export async function addShoppingItemFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const nombre = (form.nombre || "").trim();
+  if (!nombre) return;
+  const d = db(env);
+  const now = Date.now();
+  await d.run(
+    `INSERT INTO shopping_items (id, name, category, status, added_by, created_at, updated_at) VALUES (?, ?, ?, 'pending', NULL, ?, ?)`,
+    [newId(), nombre, form.categoria || null, now, now],
+  );
+}
+
+export async function addMemberFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const nombre = (form.nombre || "").trim();
+  if (!nombre) return;
+  const d = db(env);
+  const now = Date.now();
+  await d.run(
+    `INSERT INTO family_members
+      (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      newId(),
+      nombre,
+      form.rol || "",
+      form.acceso === "full" ? "full" : "managed",
+      form.fechaNacimiento || null,
+      form.pesoKg ? Number(form.pesoKg) : null,
+      form.estaturaCm ? Number(form.estaturaCm) : null,
+      form.tallaRopa || null,
+      form.nacionalidad || null,
+      form.preferenciasComida || null,
+      now,
+      now,
+    ],
+  );
+}
+
+export async function updateMemberFromForm(env: Env, id: string, form: Record<string, string>): Promise<void> {
+  const d = db(env);
+  await d.run(
+    `UPDATE family_members SET
+      name = ?, role = ?, access_level = ?, birthdate = ?, weight_kg = ?, height_cm = ?,
+      clothing_size = ?, nationality = ?, food_preferences = ?, updated_at = ?
+     WHERE id = ?`,
+    [
+      (form.nombre || "").trim(),
+      form.rol || "",
+      form.acceso === "full" ? "full" : "managed",
+      form.fechaNacimiento || null,
+      form.pesoKg ? Number(form.pesoKg) : null,
+      form.estaturaCm ? Number(form.estaturaCm) : null,
+      form.tallaRopa || null,
+      form.nacionalidad || null,
+      form.preferenciasComida || null,
+      Date.now(),
+      id,
+    ],
+  );
+}
+
+export async function deleteMember(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM family_members WHERE id = ?", [id]);
+}
+
+export async function saveTodayMenuFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const d = db(env);
+  const date = todayInTZ(env);
+  const existing = await d.first<{ date: string }>("SELECT date FROM meal_plan WHERE date = ?", [date]);
+  const now = Date.now();
+  if (existing) {
+    await d.run("UPDATE meal_plan SET breakfast = ?, lunch = ?, dinner = ?, updated_at = ? WHERE date = ?", [
+      form.desayuno || null,
+      form.comida || null,
+      form.cena || null,
+      now,
+      date,
+    ]);
+  } else {
+    await d.run(
+      "INSERT INTO meal_plan (date, breakfast, lunch, dinner, notes, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)",
+      [date, form.desayuno || null, form.comida || null, form.cena || null, now, now],
+    );
+  }
+}
+
+// ── Render: página principal ───────────────────────────────────────────
+
+function memberCard(m: FamilyMember): string {
+  const edad = ageFromBirthdate(m.birthdate);
+  const bmi = bmiInfo(m.weight_kg, m.height_cm);
+  const rows: string[] = [];
+  if (edad != null) rows.push(`<div class="row"><span>Edad</span><b>${edad} años</b></div>`);
+  if (m.weight_kg) rows.push(`<div class="row"><span>Peso</span><b>${m.weight_kg} kg</b></div>`);
+  if (m.height_cm) rows.push(`<div class="row"><span>Estatura</span><b>${m.height_cm} cm</b></div>`);
+  if (bmi) rows.push(`<div class="row"><span>IMC</span><b>${bmi.bmi} · ${esc(bmi.category)}</b></div>`);
+  if (m.clothing_size) rows.push(`<div class="row"><span>Talla</span><b>${esc(m.clothing_size)}</b></div>`);
+  if (m.nationality) rows.push(`<div class="row"><span>Nacionalidad</span><b>${esc(m.nationality)}</b></div>`);
+  if (m.food_preferences) rows.push(`<div class="row"><span>Le gusta</span><b>${esc(m.food_preferences)}</b></div>`);
+  const badge =
+    m.access_level === "full"
+      ? m.telegram_chat_id
+        ? `<span class="badge ok">conectado</span>`
+        : `<span class="badge pending">sin conectar</span>`
+      : `<span class="badge managed">perfil gestionado</span>`;
+  return `<div class="card">
+    <div class="card-head"><h3>${esc(m.name)}</h3>${badge}</div>
+    <div class="role">${esc(m.role)}</div>
+    ${rows.join("") || `<div class="empty">Sin datos todavía</div>`}
+    <a class="edit-link" href="/familia/integrante/${m.id}/editar">✏️ Editar</a>
+  </div>`;
+}
+
+function choreItem(c: Chore, pending: boolean, assignee: string | null): string {
+  const meta = [assignee, c.due_date].filter(Boolean).join(" · ");
+  return `<li class="${pending ? "" : "done"}">
+    <label>
+      <input type="checkbox" data-toggle="/familia/tarea/${c.id}/toggle" ${pending ? "" : "checked"}>
+      <span class="txt">${esc(c.title)}</span>
+    </label>
+    <span class="row-right">
+      ${meta ? `<span class="meta">${esc(meta)}</span>` : ""}
+      <button class="del" data-del="/familia/tarea/${c.id}/borrar" title="Borrar">✕</button>
+    </span>
+  </li>`;
+}
+
+function section(id: string, icon: string, title: string, bodyHtml: string): string {
+  return `<section id="${id}" class="panel">
+    <h2>${icon} ${esc(title)}</h2>
+    ${bodyHtml}
+  </section>`;
+}
+
+function assigneeOptions(members: FamilyMember[]): string {
+  return members.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("");
+}
+
+function addChoreForm(members: FamilyMember[], kind: "diaria" | "puntual", category: "tarea" | "ejercicio"): string {
+  return `<form class="add-form" method="post" action="/familia/tarea">
+    <input type="hidden" name="kind" value="${kind}">
+    <input type="hidden" name="category" value="${category}">
+    <input type="text" name="titulo" placeholder="${category === "ejercicio" ? "Nueva rutina…" : "Nueva tarea…"}" required>
+    <select name="asignado"><option value="">Sin asignar</option>${assigneeOptions(members)}</select>
+    ${kind === "puntual" ? `<input type="date" name="fecha">` : ""}
+    <button type="submit">+ Agregar</button>
+  </form>`;
+}
+
+export async function renderFamilyPage(env: Env): Promise<string> {
+  const d = db(env);
+  const members = await listMembers(d);
+  const nameById = new Map(members.map((m) => [m.id, m.name]));
+  const today = todayInTZ(env);
+
+  const chores = await d.all<Chore>(
+    "SELECT id, title, assigned_to, status, due_date, kind, category, created_at, updated_at FROM household_chores ORDER BY created_at ASC",
+  );
+  const withPending = chores.map((c) => ({ c, pending: isChorePending(c, env, today) }));
+
+  const diarias = withPending.filter((x) => x.c.category === "tarea" && x.c.kind === "diaria");
+  const puntuales = withPending.filter((x) => x.c.category === "tarea" && x.c.kind === "puntual");
+  const ejercicio = withPending.filter((x) => x.c.category === "ejercicio");
+
+  const asignadasPend = withPending.filter((x) => x.pending && x.c.assigned_to);
+  const byMember = new Map<string, typeof asignadasPend>();
+  for (const x of asignadasPend) {
+    const key = x.c.assigned_to!;
+    if (!byMember.has(key)) byMember.set(key, []);
+    byMember.get(key)!.push(x);
+  }
+
+  const menu = await d.first<{ breakfast: string | null; lunch: string | null; dinner: string | null; notes: string | null }>(
+    "SELECT breakfast, lunch, dinner, notes FROM meal_plan WHERE date = ?",
+    [today],
+  );
+
+  const shopping = await d.all<{ id: string; name: string; category: string | null; status: string }>(
+    "SELECT id, name, category, status FROM shopping_items ORDER BY status ASC, created_at ASC",
+  );
+  const shoppingPending = shopping.filter((s) => s.status === "pending");
+
+  const choreList = (list: typeof withPending, emptyMsg: string) =>
+    `<ul class="chores">${
+      list.length
+        ? list.map((x) => choreItem(x.c, x.pending, x.c.assigned_to ? nameById.get(x.c.assigned_to) ?? null : null)).join("")
+        : `<li class="empty-row">${esc(emptyMsg)}</li>`
+    }</ul>`;
+
+  const asignadasHtml = byMember.size
+    ? Array.from(byMember.entries())
+        .map(([memberId, items]) => {
+          const name = nameById.get(memberId) ?? "?";
+          return `<div class="assignee-block"><h4>${esc(name)}</h4>${choreList(items, "")}</div>`;
+        })
+        .join("")
+    : `<p class="empty-row">Nadie tiene pendientes asignados ahorita.</p>`;
+
+  const menuHtml = `<form class="menu-form" method="post" action="/familia/menu">
+    <label>Desayuno<input type="text" name="desayuno" value="${esc(menu?.breakfast || "")}"></label>
+    <label>Comida<input type="text" name="comida" value="${esc(menu?.lunch || "")}"></label>
+    <label>Cena<input type="text" name="cena" value="${esc(menu?.dinner || "")}"></label>
+    <button type="submit">Guardar menú de hoy</button>
+  </form>`;
+
+  const shoppingItem = (s: (typeof shopping)[number]) => `<li class="${s.status === "bought" ? "done" : ""}">
+    <label>
+      <input type="checkbox" data-toggle="/familia/compra/${s.id}/toggle" ${s.status === "bought" ? "checked" : ""}>
+      <span class="txt">${esc(s.name)}</span>
+    </label>
+    <span class="row-right">
+      ${s.category ? `<span class="meta">${esc(s.category)}</span>` : ""}
+      <button class="del" data-del="/familia/compra/${s.id}/borrar" title="Borrar">✕</button>
+    </span>
+  </li>`;
+
+  return `<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(env.BUSINESS_NAME || "Familia")}</title>
+<style>${SHARED_STYLE}</style>
+</head><body>
+<header>
+  <h1>👨‍👩‍👧‍👦 ${esc(env.BUSINESS_NAME || "Familia")}</h1>
+  <p>Resumen en vivo de la casa — todo se puede editar aquí mismo</p>
+</header>
+<nav>
+  <a href="#integrantes">👪 Integrantes</a>
+  <a href="#diarias">📋 Diarias</a>
+  <a href="#puntuales">✅ Puntuales</a>
+  <a href="#ejercicio">🏃 Ejercicio</a>
+  <a href="#asignadas">🙋 Asignadas</a>
+  <a href="#menu">🍽️ Menú</a>
+  <a href="#compra">🛒 Compra</a>
+</nav>
+<main>
+  <section id="integrantes">
+    <div class="grid">${members.map(memberCard).join("") || `<div class="card">Todavía no hay nadie registrado.</div>`}</div>
+    <details class="add-member"><summary>+ Agregar integrante</summary>
+      <form method="post" action="/familia/integrante">
+        <input type="text" name="nombre" placeholder="Nombre" required>
+        <input type="text" name="rol" placeholder="Rol (papá, mamá, hijo…)">
+        <label class="chk"><input type="checkbox" name="acceso" value="full"> Acceso completo (chatea directo)</label>
+        <input type="date" name="fechaNacimiento">
+        <input type="number" step="0.1" name="pesoKg" placeholder="Peso (kg)">
+        <input type="number" step="0.1" name="estaturaCm" placeholder="Estatura (cm)">
+        <input type="text" name="tallaRopa" placeholder="Talla de ropa">
+        <input type="text" name="nacionalidad" placeholder="Nacionalidad">
+        <input type="text" name="preferenciasComida" placeholder="Le gusta comer…">
+        <button type="submit">Guardar integrante</button>
+      </form>
+    </details>
+  </section>
+
+  ${section("diarias", "📋", "Tareas diarias", choreList(diarias, "Sin tareas diarias registradas.") + addChoreForm(members, "diaria", "tarea"))}
+  ${section("puntuales", "✅", "Tareas puntuales", choreList(puntuales, "Sin tareas puntuales pendientes.") + addChoreForm(members, "puntual", "tarea"))}
+  ${section("ejercicio", "🏃", "Ejercicio", choreList(ejercicio, "Sin rutinas registradas.") + addChoreForm(members, "puntual", "ejercicio"))}
+  ${section("asignadas", "🙋", "Quién hace qué", asignadasHtml)}
+  ${section("menu", "🍽️", "Menú de hoy", menuHtml)}
+  ${section(
+    "compra",
+    "🛒",
+    `Lista de la compra (${shoppingPending.length} pendiente${shoppingPending.length === 1 ? "" : "s"})`,
+    `<ul class="chores">${shopping.length ? shopping.map(shoppingItem).join("") : `<li class="empty-row">La lista está vacía.</li>`}</ul>
+     <form class="add-form" method="post" action="/familia/compra">
+       <input type="text" name="nombre" placeholder="Nuevo producto…" required>
+       <input type="text" name="categoria" placeholder="Categoría (opcional)">
+       <button type="submit">+ Agregar</button>
+     </form>`,
+  )}
+</main>
+<footer>Página privada de la familia — no la compartas fuera de casa.</footer>
+<script>${SHARED_SCRIPT}</script>
+</body></html>`;
+}
+
+// ── Render: editar integrante ──────────────────────────────────────────
+
+export async function renderEditMemberPage(env: Env, id: string): Promise<string> {
+  const d = db(env);
+  const m = await d.first<FamilyMember>("SELECT * FROM family_members WHERE id = ?", [id]);
+  if (!m) return `<!doctype html><html><body><p>No encontré a ese integrante. <a href="/familia">Volver</a></p></body></html>`;
+
+  return `<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Editar ${esc(m.name)}</title>
+<style>${SHARED_STYLE}</style>
+</head><body>
+<header><h1>✏️ Editar a ${esc(m.name)}</h1></header>
+<main>
+  <section class="panel">
+    <form method="post" action="/familia/integrante/${m.id}">
+      <label class="field">Nombre completo<input type="text" name="nombre" value="${esc(m.name)}" required></label>
+      <label class="field">Rol<input type="text" name="rol" value="${esc(m.role)}"></label>
+      <label class="chk"><input type="checkbox" name="acceso" value="full" ${m.access_level === "full" ? "checked" : ""}> Acceso completo (chatea directo con el bot)</label>
+      <label class="field">Fecha de nacimiento<input type="date" name="fechaNacimiento" value="${m.birthdate ?? ""}"></label>
+      <label class="field">Peso (kg)<input type="number" step="0.1" name="pesoKg" value="${m.weight_kg ?? ""}"></label>
+      <label class="field">Estatura (cm)<input type="number" step="0.1" name="estaturaCm" value="${m.height_cm ?? ""}"></label>
+      <label class="field">Talla de ropa<input type="text" name="tallaRopa" value="${esc(m.clothing_size ?? "")}"></label>
+      <label class="field">Nacionalidad<input type="text" name="nacionalidad" value="${esc(m.nationality ?? "")}"></label>
+      <label class="field">Le gusta comer<input type="text" name="preferenciasComida" value="${esc(m.food_preferences ?? "")}"></label>
+      <div class="btn-row">
+        <button type="submit">Guardar cambios</button>
+        <a class="btn-secondary" href="/familia">Cancelar</a>
+      </div>
+    </form>
+    <form method="post" action="/familia/integrante/${m.id}/borrar" class="danger-form" onsubmit="return confirm('¿Borrar a ${esc(m.name)} de la familia? No se puede deshacer.');">
+      <button type="submit" class="danger">🗑 Borrar a ${esc(m.name)}</button>
+    </form>
+  </section>
+</main>
+</body></html>`;
+}
+
+// ── Estilos y script compartidos ───────────────────────────────────────
+
+const SHARED_STYLE = `
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,system-ui,sans-serif; background:#f3f4f8; color:#1a1f3c; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0e1116; color:#e8eaf2; }
+    .card, .panel, nav, .add-form, .add-member form, .menu-form, select, input, .field input { background:#171b24 !important; border-color:#2a2f3c !important; color:#e8eaf2 !important; }
+    .row span, .meta, .role { color:#9aa0b4 !important; }
+    li { border-bottom-color:#242938 !important; }
+  }
+  header { padding:22px 20px 10px; text-align:center; }
+  header h1 { margin:0; font-size:1.35rem; }
+  header p { margin:4px 0 0; color:#6b7280; font-size:.85rem; }
+  nav { position:sticky; top:0; z-index:10; display:flex; gap:6px; overflow-x:auto; padding:10px 14px; background:#fff; border-bottom:1px solid #e5e7eb; }
+  nav a { flex:none; font-size:.8rem; text-decoration:none; color:#4a6cf7; background:#eef1ff; padding:6px 12px; border-radius:999px; white-space:nowrap; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; margin-bottom:10px; }
+  .card { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:16px; position:relative; }
+  .card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .card-head h3 { margin:0; font-size:1.02rem; }
+  .role { color:#6b7280; font-size:.82rem; margin:2px 0 10px; text-transform:capitalize; }
+  .row { display:flex; justify-content:space-between; font-size:.85rem; padding:3px 0; }
+  .row span { color:#6b7280; }
+  .empty, .empty-row { color:#9aa0b4; font-size:.85rem; }
+  .badge { font-size:.68rem; padding:3px 8px; border-radius:999px; white-space:nowrap; }
+  .badge.ok { background:#dcfce7; color:#16a34a; }
+  .badge.pending { background:#fef3c7; color:#b45309; }
+  .badge.managed { background:#e0e7ff; color:#4a6cf7; }
+  .edit-link { display:inline-block; margin-top:10px; font-size:.78rem; color:#4a6cf7; text-decoration:none; }
+  .add-member { margin-bottom:22px; }
+  .add-member summary { cursor:pointer; font-size:.85rem; color:#4a6cf7; padding:6px 0; }
+  .add-member form, .panel form.add-form:not(.menu-form) { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  .add-member input, .add-form input, .add-form select, .field input { border:1px solid #e5e7eb; border-radius:8px; padding:7px 10px; font-size:.85rem; background:#fff; }
+  .add-member input { flex:1 1 140px; }
+  .add-member button, .add-form button { border:none; background:#4a6cf7; color:#fff; border-radius:8px; padding:8px 14px; font-size:.85rem; cursor:pointer; }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:18px; margin-bottom:16px; scroll-margin-top:56px; }
+  .panel h2 { margin:0 0 12px; font-size:1.02rem; }
+  ul.chores { list-style:none; margin:0; padding:0; }
+  ul.chores li { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:1px solid #f0f0f3; font-size:.92rem; }
+  ul.chores li:last-child { border-bottom:none; }
+  ul.chores label { display:flex; align-items:center; gap:10px; cursor:pointer; flex:1; min-width:0; }
+  ul.chores input[type=checkbox] { width:19px; height:19px; accent-color:#4a6cf7; flex:none; }
+  ul.chores li.done .txt { text-decoration:line-through; color:#9aa0b4; }
+  .meta { color:#9aa0b4; font-size:.78rem; white-space:nowrap; }
+  .row-right { display:flex; align-items:center; gap:8px; flex:none; }
+  .del { border:none; background:none; color:#d1d5db; font-size:.95rem; cursor:pointer; padding:2px 6px; }
+  .del:hover { color:#ef4444; }
+  .add-form { padding-top:10px; margin-top:8px; border-top:1px dashed #e5e7eb; }
+  .add-form select { flex:1 1 120px; }
+  .assignee-block { margin-bottom:14px; }
+  .assignee-block:last-child { margin-bottom:0; }
+  .assignee-block h4 { margin:0 0 4px; font-size:.85rem; color:#4a6cf7; }
+  .menu-form { display:flex; flex-direction:column; gap:10px; }
+  .menu-form label { display:flex; flex-direction:column; gap:4px; font-size:.78rem; color:#9aa0b4; }
+  .menu-form input { border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; font-size:.9rem; color:#1a1f3c; }
+  .field { display:flex; flex-direction:column; gap:4px; font-size:.78rem; color:#9aa0b4; margin-bottom:12px; }
+  .field input { padding:9px 10px; font-size:.92rem; color:#1a1f3c; }
+  .chk { display:flex; align-items:center; gap:8px; font-size:.88rem; margin-bottom:14px; }
+  .btn-row { display:flex; gap:10px; margin-top:6px; }
+  .btn-row button, .btn-secondary { border:none; background:#4a6cf7; color:#fff; border-radius:8px; padding:9px 16px; font-size:.88rem; cursor:pointer; text-decoration:none; }
+  .btn-secondary { background:#eef1ff; color:#4a6cf7; }
+  .danger-form { margin-top:18px; padding-top:14px; border-top:1px solid #f0f0f3; }
+  .danger { border:none; background:#fee2e2; color:#b91c1c; border-radius:8px; padding:9px 14px; font-size:.85rem; cursor:pointer; }
+  footer { text-align:center; color:#9aa0b4; font-size:.72rem; padding:22px; }
+`;
+
+const SHARED_SCRIPT = `
+document.querySelectorAll('[data-toggle]').forEach(function (el) {
+  el.addEventListener('change', function () {
+    var li = el.closest('li');
+    el.disabled = true;
+    fetch(el.dataset.toggle, { method: 'POST' })
+      .then(function (r) { if (!r.ok) throw new Error('fail'); if (li) li.classList.toggle('done', el.checked); })
+      .catch(function () { el.checked = !el.checked; })
+      .finally(function () { el.disabled = false; });
+  });
+});
+document.querySelectorAll('[data-del]').forEach(function (el) {
+  el.addEventListener('click', function () {
+    if (!confirm('¿Borrar esto?')) return;
+    var li = el.closest('li');
+    fetch(el.dataset.del, { method: 'POST' })
+      .then(function (r) { if (r.ok && li) li.remove(); })
+      .catch(function () {});
+  });
+});
+`;
