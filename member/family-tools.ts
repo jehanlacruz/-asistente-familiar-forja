@@ -191,6 +191,30 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const generarEnlaceAccesoWeb = tool({
+    description:
+      "Genera un enlace de un solo uso para que un integrante con acceso completo entre a la página web de la familia (/familia) con su PROPIA sesión guardada en su navegador — no necesita saber ninguna contraseña. Úsalo cuando pidan 'dame acceso a la web', 'quiero mi propio usuario', etc.",
+    inputSchema: z.object({ nombre: z.string().describe("Nombre exacto del integrante, con acceso completo") }),
+    execute: async ({ nombre }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+      if (member.access_level !== "full") return { error: `${nombre} no tiene acceso completo.` };
+
+      const token = newId().replace(/-/g, "") + newId().replace(/-/g, "");
+      await d.run("INSERT INTO family_web_invites (token, member_id, created_at) VALUES (?, ?, ?)", [token, member.id, Date.now()]);
+      const base = ctx.env.DASHBOARD_BASE_URL || "";
+
+      return {
+        ok: true,
+        enlace: `${base}/familia/entrar/${token}`,
+        mensaje: `Mándale este enlace a ${nombre} — al abrirlo en su navegador entra directo, con su propia sesión guardada ahí.`,
+      };
+    },
+  });
+
   const actualizarDatosIntegrante = tool({
     description:
       "Actualiza el perfil de un integrante ya registrado (peso, estatura, talla de ropa, fecha de nacimiento, nacionalidad, preferencias de comida). Cualquiera con acceso completo puede actualizar a cualquier integrante, incluido a sí mismo.",
@@ -858,6 +882,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
   return {
     registrarIntegranteFamilia,
     generarEnlaceInvitacion,
+    generarEnlaceAccesoWeb,
     actualizarDatosIntegrante,
     consultarIntegrante,
     listarFamilia,

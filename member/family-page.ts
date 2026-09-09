@@ -219,6 +219,66 @@ export async function deleteMember(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM family_members WHERE id = ?", [id]);
 }
 
+// ── Login individual de la web (family_web_invites → family_web_sessions) ──
+
+export async function createWebInvite(
+  env: Env,
+  memberId: string,
+): Promise<{ ok: true; token: string; memberName: string } | { ok: false; error: string }> {
+  const d = db(env);
+  const member = await d.first<FamilyMember>("SELECT * FROM family_members WHERE id = ?", [memberId]);
+  if (!member) return { ok: false, error: "No encontré a ese integrante." };
+  if (member.access_level !== "full")
+    return { ok: false, error: `${member.name} no tiene acceso completo — no necesita su propia sesión web.` };
+  const token = newId().replace(/-/g, "") + newId().replace(/-/g, "");
+  await d.run("INSERT INTO family_web_invites (token, member_id, created_at) VALUES (?, ?, ?)", [token, memberId, Date.now()]);
+  return { ok: true, token, memberName: member.name };
+}
+
+/** Consume el enlace de invitación (un solo uso) y devuelve el token de sesión nuevo, o null si ya no es válido. */
+export async function consumeWebInvite(env: Env, inviteToken: string): Promise<string | null> {
+  const d = db(env);
+  const invite = await d.first<{ member_id: string; used_at: number | null }>(
+    "SELECT member_id, used_at FROM family_web_invites WHERE token = ?",
+    [inviteToken],
+  );
+  if (!invite || invite.used_at) return null;
+  const sessionToken = newId().replace(/-/g, "") + newId().replace(/-/g, "");
+  await d.run("INSERT INTO family_web_sessions (token, member_id, created_at) VALUES (?, ?, ?)", [sessionToken, invite.member_id, Date.now()]);
+  await d.run("UPDATE family_web_invites SET used_at = ? WHERE token = ?", [Date.now(), inviteToken]);
+  return sessionToken;
+}
+
+export async function findFamilySessionMember(env: Env, sessionToken: string): Promise<FamilyMember | null> {
+  const d = db(env);
+  const row = await d.first<{ member_id: string }>("SELECT member_id FROM family_web_sessions WHERE token = ?", [sessionToken]);
+  if (!row) return null;
+  return d.first<FamilyMember>("SELECT * FROM family_members WHERE id = ? AND access_level = 'full'", [row.member_id]);
+}
+
+export async function deleteWebSession(env: Env, sessionToken: string): Promise<void> {
+  await db(env).run("DELETE FROM family_web_sessions WHERE token = ?", [sessionToken]);
+}
+
+export function renderWebInviteLinkPage(env: Env, memberName: string, url: string): string {
+  const body = `<section class="panel" style="text-align:center;">
+    <h2>🔗 Enlace de acceso para ${esc(memberName)}</h2>
+    <p class="soon-desc">Mándaselo por su Telegram u otro chat privado — es de un solo uso. Al abrirlo en su navegador queda con su propia sesión guardada ahí; no necesita saber ninguna contraseña.</p>
+    <div class="invite-link-box">${esc(url)}</div>
+    <a class="btn-secondary" href="/familia/integrantes">← Volver</a>
+  </section>`;
+  return layout(env, "Enlace generado", "integrantes", body);
+}
+
+export function renderWebInviteInvalidPage(env: Env): string {
+  return layout(
+    env,
+    "Enlace inválido",
+    "integrantes",
+    `<section class="panel" style="text-align:center;"><p>Este enlace ya se usó o no es válido. Pide uno nuevo desde <a href="/familia/integrantes">Integrantes</a>.</p></section>`,
+  );
+}
+
 export async function saveTodayMenuFromForm(env: Env, form: Record<string, string>): Promise<void> {
   const d = db(env);
   const date = todayInTZ(env);
@@ -288,7 +348,7 @@ function layout(env: Env, title: string, activeKey: string, bodyHtml: string): s
 </header>
 <nav>${NAV.map((n) => `<a href="${n.href}" class="${n.key === activeKey ? "active" : ""}">${n.icon} ${esc(n.label)}</a>`).join("")}</nav>
 <main>${bodyHtml}</main>
-<footer>Página privada de la familia — no la compartas fuera de casa.</footer>
+<footer>Página privada de la familia — no la compartas fuera de casa.<br><form method="post" action="/familia/salir" style="display:inline"><button type="submit" class="link-btn">Cerrar sesión</button></form></footer>
 <script>${SHARED_SCRIPT}</script>
 </body></html>`;
 }
@@ -352,7 +412,10 @@ function memberCard(m: FamilyMember): string {
     <div class="card-head"><h3>${esc(m.name)}</h3>${badge}</div>
     <div class="role">${esc(m.role)}</div>
     ${rows.join("") || `<div class="empty">Sin datos todavía</div>`}
-    <a class="edit-link" href="/familia/integrante/${m.id}/editar">✏️ Editar</a>
+    <div class="card-actions">
+      <a class="edit-link" href="/familia/integrante/${m.id}/editar">✏️ Editar</a>
+      ${m.access_level === "full" ? `<form method="post" action="/familia/integrante/${m.id}/generar-acceso-web"><button type="submit" class="link-btn">🔗 Enlace de acceso web</button></form>` : ""}
+    </div>
   </div>`;
 }
 
@@ -878,6 +941,7 @@ const SHARED_STYLE = `
     .row span, .meta, .role, .hub-card p, .day-date, .recipe { color:#9aa0b4 !important; }
     li, .meal-slot { border-bottom-color:#242938 !important; border-top-color:#242938 !important; }
     .budget-bar { background:#242938; }
+    .invite-link-box { background:#171b24; border-color:#2a2f3c; }
   }
   header { padding:22px 20px 10px; text-align:center; }
   header h1 { margin:0; font-size:1.35rem; }
@@ -925,6 +989,9 @@ const SHARED_STYLE = `
   .badge.pending { background:#fef3c7; color:#b45309; }
   .badge.managed { background:#e0e7ff; color:#4a6cf7; }
   .edit-link { display:inline-block; margin-top:10px; font-size:.78rem; color:#4a6cf7; text-decoration:none; }
+  .card-actions { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  .link-btn { border:none; background:none; color:#4a6cf7; font-size:.78rem; cursor:pointer; padding:0; margin-top:10px; font-family:inherit; }
+  .invite-link-box { background:#f7f8fc; border:1px solid #e5e7eb; border-radius:10px; padding:14px; font-size:.85rem; word-break:break-all; margin:14px 0; user-select:all; }
   .add-member { margin-bottom:22px; }
   .add-member summary { cursor:pointer; font-size:.85rem; color:#4a6cf7; padding:6px 0; }
   .add-member form, .panel form.add-form:not(.menu-form) { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }

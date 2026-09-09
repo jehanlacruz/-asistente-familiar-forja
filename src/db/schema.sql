@@ -355,6 +355,23 @@ CREATE TABLE IF NOT EXISTS family_members (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_family_members_chat ON family_members(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL;
 
+-- Login individual de la página web (/familia): enlace de un solo uso →
+-- sesión persistente por cookie. Solo access_level='full' puede tener sesión.
+CREATE TABLE IF NOT EXISTS family_web_invites (
+  token TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  used_at INTEGER,
+  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS family_web_sessions (
+  token TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_member ON family_web_sessions(member_id);
+
 -- Enlaces de invitación de un solo uso, uno por integrante full-access sin conectar.
 CREATE TABLE IF NOT EXISTS family_invites (
   token TEXT PRIMARY KEY,

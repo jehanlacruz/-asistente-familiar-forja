@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { applyLanguage } from "./idioma";
 import type { Env } from "./env";
 import type { ChannelAdapter, IncomingMessage } from "./channels/shared";
@@ -52,6 +53,12 @@ import {
   updateMemberFromForm,
   deleteMember,
   saveTodayMenuFromForm,
+  createWebInvite,
+  consumeWebInvite,
+  findFamilySessionMember,
+  deleteWebSession,
+  renderWebInviteLinkPage,
+  renderWebInviteInvalidPage,
 } from "../member/family-page";
 import { funnelsApp } from "./funnels/routes";
 import { applyTier } from "./tier";
@@ -624,9 +631,45 @@ app.get("/admin/", (c) => c.redirect("/admin/overview"));
 // Admin dashboard — Basic Auth guarded sub-app mounted at /admin/*.
 app.route("/admin", adminApp);
 
-// Centro Familiar (member/family-page.ts) — misma contraseña del panel.
-app.use("/familia", async (c, next) => adminAuth(c.env)(c, next));
-app.use("/familia/*", async (c, next) => adminAuth(c.env)(c, next));
+// Centro Familiar (member/family-page.ts): sesión propia por integrante
+// (cookie family_session) O la contraseña maestra del panel como rescate —
+// mismo patrón que /admin (cookie de Equipo O Basic Auth siempre válido).
+// /familia/entrar/:token es la ÚNICA ruta libre (así te puedes autenticar).
+app.use("/familia", async (c, next) => {
+  if (await findFamilySessionMember(c.env, getCookie(c, "family_session") ?? "")) return next();
+  return adminAuth(c.env)(c, next);
+});
+app.use("/familia/*", async (c, next) => {
+  if (c.req.path.startsWith("/familia/entrar/")) return next();
+  if (await findFamilySessionMember(c.env, getCookie(c, "family_session") ?? "")) return next();
+  return adminAuth(c.env)(c, next);
+});
+app.get("/familia/entrar/:token", async (c) => {
+  const sessionToken = await consumeWebInvite(c.env, c.req.param("token"));
+  if (!sessionToken) return c.html(renderWebInviteInvalidPage(c.env), 400);
+  setCookie(c, "family_session", sessionToken, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+  });
+  return c.redirect("/familia");
+});
+app.post("/familia/integrante/:id/generar-acceso-web", async (c) => {
+  const result = await createWebInvite(c.env, c.req.param("id"));
+  if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/integrantes">Volver</a>`, 400);
+  const url = `${new URL(c.req.url).origin}/familia/entrar/${result.token}`;
+  return c.html(renderWebInviteLinkPage(c.env, result.memberName, url));
+});
+app.post("/familia/salir", async (c) => {
+  const token = getCookie(c, "family_session");
+  if (token) {
+    await deleteWebSession(c.env, token);
+    deleteCookie(c, "family_session", { path: "/" });
+  }
+  return c.redirect("/familia");
+});
 app.get("/familia", async (c) => c.html(await renderHome(c.env)));
 app.get("/familia/integrantes", async (c) => c.html(await renderIntegrantesPage(c.env)));
 app.get("/familia/tareas", async (c) => c.html(await renderTareasPage(c.env)));
