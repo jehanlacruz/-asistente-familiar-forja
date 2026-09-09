@@ -32,6 +32,9 @@ import {
   renderCompraPage,
   renderRecordatoriosPage,
   renderFinanzasPage,
+  addTransactionFromForm,
+  deleteTransaction,
+  setBudgetFromForm,
   renderNinosPage,
   addActivityFromForm,
   toggleActivityFavorite,
@@ -639,7 +642,19 @@ app.post("/familia/recordatorio/:id/borrar", async (c) => {
   await cancelReminder(c.env, c.req.param("id"));
   return c.body(null, 204);
 });
-app.get("/familia/finanzas", (c) => c.html(renderFinanzasPage(c.env)));
+app.get("/familia/finanzas", async (c) => c.html(await renderFinanzasPage(c.env)));
+app.post("/familia/transaccion", async (c) => {
+  await addTransactionFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/finanzas");
+});
+app.post("/familia/transaccion/:id/borrar", async (c) => {
+  await deleteTransaction(c.env, c.req.param("id"));
+  return c.body(null, 204);
+});
+app.post("/familia/presupuesto", async (c) => {
+  await setBudgetFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/finanzas");
+});
 app.get("/familia/ninos", async (c) => c.html(await renderNinosPage(c.env)));
 app.post("/familia/actividad", async (c) => {
   await addActivityFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);

@@ -450,3 +450,27 @@ CREATE TABLE IF NOT EXISTS family_activities (
   FOREIGN KEY (for_member) REFERENCES family_members(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_activities_fav ON family_activities(is_favorite);
+
+-- type: 'ingreso' | 'gasto'. date en YYYY-MM-DD (se agrupa por mes con substr(date,1,7)).
+CREATE TABLE IF NOT EXISTS transactions (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  amount REAL NOT NULL,
+  category TEXT NOT NULL,
+  description TEXT,
+  member_id TEXT,
+  date TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category);
+
+-- Presupuesto mensual por categoría (se repite cada mes). La categoría
+-- "Total" es convención para el presupuesto general del mes, no una regla dura.
+CREATE TABLE IF NOT EXISTS budgets (
+  category TEXT PRIMARY KEY,
+  monthly_limit REAL NOT NULL,
+  updated_at INTEGER NOT NULL
+);

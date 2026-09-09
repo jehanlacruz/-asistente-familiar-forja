@@ -25,6 +25,24 @@ export interface FamilyMember {
   updated_at: number;
 }
 
+export interface Transaction {
+  id: string;
+  type: "ingreso" | "gasto";
+  amount: number;
+  category: string;
+  description: string | null;
+  member_id: string | null;
+  date: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface Budget {
+  category: string;
+  monthly_limit: number;
+  updated_at: number;
+}
+
 export interface FamilyActivity {
   id: string;
   title: string;

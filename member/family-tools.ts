@@ -19,9 +19,12 @@ import {
   isChorePending,
   zonedDateTimeToUtcMs,
   formatDateTimeInTZ,
+  sendTelegramMessage,
   type FamilyMember,
   type Chore,
   type Reminder,
+  type Transaction,
+  type Budget,
 } from "./family-lib";
 
 async function requireFullAccessSender(
@@ -638,6 +641,118 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const registrarTransaccion = tool({
+    description:
+      "Registra un ingreso o un gasto (ej. 'gasté 40€ en el súper', 'entraron 1200€ de nómina'). Si es un gasto y hay presupuesto definido para esa categoría (o 'Total'), avisa si se pasa del límite del mes.",
+    inputSchema: z.object({
+      tipo: z.enum(["ingreso", "gasto"]),
+      monto: z.number().positive(),
+      categoria: z.string().describe("ej. 'Súper', 'Transporte', 'Ocio', 'Nómina'"),
+      descripcion: z.string().optional(),
+      fecha: z.string().optional().describe("YYYY-MM-DD, por default hoy"),
+    }),
+    execute: async ({ tipo, monto, categoria, descripcion, fecha }) => {
+      const date = fecha ?? todayInTZ(ctx.env);
+      const month = date.slice(0, 7);
+      const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const sender = senderChatId ? await findMemberByChatId(d, senderChatId) : null;
+      const now = Date.now();
+      await d.run(
+        `INSERT INTO transactions (id, type, amount, category, description, member_id, date, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [newId(), tipo, monto, categoria, descripcion ?? null, sender?.id ?? null, date, now, now],
+      );
+
+      if (tipo !== "gasto") return { ok: true, mensaje: `Ingreso de ${monto} en "${categoria}" registrado.` };
+
+      const checkBudget = async (cat: string) => {
+        const budget = await d.first<Budget>("SELECT * FROM budgets WHERE category = ?", [cat]);
+        if (!budget) return null;
+        const spent = await d.first<{ total: number }>(
+          "SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'gasto' AND category = ? AND substr(date, 1, 7) = ?",
+          [cat, month],
+        );
+        const total = spent?.total ?? 0;
+        return total > budget.monthly_limit ? { cat, total, limit: budget.monthly_limit } : null;
+      };
+
+      const overCategory = await checkBudget(categoria);
+      const overTotal = categoria !== "Total" ? await checkBudget("Total") : null;
+      const alerts = [overCategory, overTotal].filter((x): x is NonNullable<typeof x> => x != null);
+
+      if (alerts.length) {
+        const owner = ctx.env.OWNER_TELEGRAM_CHAT_ID;
+        for (const a of alerts) {
+          const msg = `💸 Presupuesto de "${a.cat}" superado este mes: llevas ${a.total.toFixed(2)} de ${a.limit.toFixed(2)}.`;
+          if (owner) await sendTelegramMessage(ctx.env, owner, msg).catch(() => {});
+        }
+      }
+
+      return {
+        ok: true,
+        mensaje: `Gasto de ${monto} en "${categoria}" registrado.`,
+        alertasPresupuesto: alerts.map((a) => `"${a.cat}": llevas ${a.total.toFixed(2)} de ${a.limit.toFixed(2)} este mes — avísale a la familia.`),
+      };
+    },
+  });
+
+  const listarTransacciones = tool({
+    description: "Lista transacciones (ingresos/gastos) de un mes, opcionalmente filtradas por tipo o categoría. Si no se da el mes, es el actual.",
+    inputSchema: z.object({
+      mes: z.string().optional().describe("YYYY-MM, por default el mes actual"),
+      tipo: z.enum(["ingreso", "gasto"]).optional(),
+      categoria: z.string().optional(),
+    }),
+    execute: async ({ mes, tipo, categoria }) => {
+      const month = mes ?? todayInTZ(ctx.env).slice(0, 7);
+      const rows = await d.all<Transaction>(
+        "SELECT * FROM transactions WHERE substr(date, 1, 7) = ? ORDER BY date DESC, created_at DESC",
+        [month],
+      );
+      const filtered = rows.filter((r) => (!tipo || r.type === tipo) && (!categoria || r.category.toLowerCase() === categoria.toLowerCase()));
+      const totalIngresos = rows.filter((r) => r.type === "ingreso").reduce((s, r) => s + r.amount, 0);
+      const totalGastos = rows.filter((r) => r.type === "gasto").reduce((s, r) => s + r.amount, 0);
+      return {
+        mes: month,
+        totalIngresos,
+        totalGastos,
+        balance: totalIngresos - totalGastos,
+        transacciones: filtered.map((r) => ({ tipo: r.type, monto: r.amount, categoria: r.category, descripcion: r.description, fecha: r.date })),
+      };
+    },
+  });
+
+  const definirPresupuesto = tool({
+    description: "Define o actualiza el presupuesto mensual de una categoría. Usa la categoría 'Total' para el presupuesto general del mes.",
+    inputSchema: z.object({ categoria: z.string(), montoMensual: z.number().positive() }),
+    execute: async ({ categoria, montoMensual }) => {
+      await d.run(
+        `INSERT INTO budgets (category, monthly_limit, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(category) DO UPDATE SET monthly_limit = excluded.monthly_limit, updated_at = excluded.updated_at`,
+        [categoria, montoMensual, Date.now()],
+      );
+      return { ok: true, mensaje: `Presupuesto de "${categoria}" fijado en ${montoMensual}/mes.` };
+    },
+  });
+
+  const consultarPresupuestos = tool({
+    description: "Consulta los presupuestos definidos y cuánto se ha gastado de cada uno este mes.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const budgets = await d.all<Budget>("SELECT * FROM budgets ORDER BY category ASC");
+      const month = todayInTZ(ctx.env).slice(0, 7);
+      const result = [];
+      for (const b of budgets) {
+        const spent = await d.first<{ total: number }>(
+          "SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'gasto' AND category = ? AND substr(date, 1, 7) = ?",
+          [b.category, month],
+        );
+        result.push({ categoria: b.category, presupuesto: b.monthly_limit, gastado: spent?.total ?? 0 });
+      }
+      return { mes: month, presupuestos: result };
+    },
+  });
+
   const unirseConEnlace = tool({
     description:
       "Conecta a quien escribe con su perfil de familia usando el código de un enlace de invitación (mensajes que empiezan con '/start '). Llama esta tool SIEMPRE que el mensaje sea justo eso, antes de responder cualquier otra cosa.",
@@ -765,6 +880,10 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     listarActividadesFamiliares,
     marcarActividadFavorita,
     consultarInteresesNinos,
+    registrarTransaccion,
+    listarTransacciones,
+    definirPresupuesto,
+    consultarPresupuestos,
     unirseConEnlace,
   };
 }

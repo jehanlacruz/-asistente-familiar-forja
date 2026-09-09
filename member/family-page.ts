@@ -24,6 +24,8 @@ import {
   type Chore,
   type Reminder,
   type FamilyActivity,
+  type Transaction,
+  type Budget,
 } from "./family-lib";
 import type { Env } from "../src/env";
 
@@ -183,6 +185,34 @@ export async function toggleActivityFavorite(env: Env, id: string): Promise<void
 
 export async function deleteActivity(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM family_activities WHERE id = ?", [id]);
+}
+
+export async function addTransactionFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const categoria = (form.categoria || "").trim();
+  const monto = Number(form.monto);
+  if (!categoria || !monto) return;
+  const d = db(env);
+  const now = Date.now();
+  await d.run(
+    `INSERT INTO transactions (id, type, amount, category, description, member_id, date, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    [newId(), form.tipo === "ingreso" ? "ingreso" : "gasto", monto, categoria, form.descripcion || null, form.fecha || todayInTZ(env), now, now],
+  );
+}
+
+export async function deleteTransaction(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM transactions WHERE id = ?", [id]);
+}
+
+export async function setBudgetFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const categoria = (form.categoria || "").trim();
+  const monto = Number(form.montoMensual);
+  if (!categoria || !monto) return;
+  await db(env).run(
+    `INSERT INTO budgets (category, monthly_limit, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(category) DO UPDATE SET monthly_limit = excluded.monthly_limit, updated_at = excluded.updated_at`,
+    [categoria, monto, Date.now()],
+  );
 }
 
 export async function deleteMember(env: Env, id: string): Promise<void> {
@@ -400,6 +430,15 @@ export async function renderHome(env: Env): Promise<string> {
   const nextReminder = await d.first<{ title: string; remind_at: number }>(
     "SELECT title, remind_at FROM reminders WHERE status = 'pending' ORDER BY remind_at ASC LIMIT 1",
   );
+  const month = today.slice(0, 7);
+  const balanceRow = await d.first<{ ingresos: number; gastos: number }>(
+    `SELECT
+      COALESCE(SUM(CASE WHEN type = 'ingreso' THEN amount ELSE 0 END), 0) as ingresos,
+      COALESCE(SUM(CASE WHEN type = 'gasto' THEN amount ELSE 0 END), 0) as gastos
+     FROM transactions WHERE substr(date, 1, 7) = ?`,
+    [month],
+  );
+  const cur = await currencySymbol(env);
 
   const menuResumen = menu ? [menu.breakfast, menu.lunch, menu.dinner].filter(Boolean).join(" · ") : null;
 
@@ -417,8 +456,8 @@ export async function renderHome(env: Env): Promise<string> {
     ${hubCard("/familia/menu", "🍽️", "Menú de hoy", esc(menuResumen || "Sin definir todavía"))}
     ${hubCard("/familia/ejercicio", "🏃", "Ejercicio", pendEjercicio.length ? `${pendEjercicio.length} rutina${pendEjercicio.length === 1 ? "" : "s"} pendiente${pendEjercicio.length === 1 ? "" : "s"}` : "Sin rutinas hoy")}
     ${hubCard("/familia/recordatorios", "⏰", "Recordatorios", nextReminder ? `${esc(nextReminder.title)} · ${esc(formatDateTimeInTZ(nextReminder.remind_at, env))}` : "Sin recordatorios programados")}
-    ${hubCard("/familia/finanzas", "💶", "Finanzas", "Presupuesto del mes", true)}
-    ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas para Aday y Adiel", true)}
+    ${hubCard("/familia/finanzas", "💶", "Finanzas", `Balance del mes: ${((balanceRow?.ingresos ?? 0) - (balanceRow?.gastos ?? 0)).toFixed(2)}${cur}`)}
+    ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas y favoritas guardadas")}
     ${hubCard("/familia/integrantes", "👪", "Integrantes", "Perfiles de la familia")}
   </div>`;
 
@@ -656,12 +695,83 @@ export async function renderRecordatoriosPage(env: Env): Promise<string> {
   return layout(env, "Recordatorios", "recordatorios", body);
 }
 
-export function renderFinanzasPage(env: Env): string {
-  return comingSoonPage(env, "finanzas", "💶", "Finanzas", "Ingresos y gastos por categoría, presupuesto mensual, y un resumen de cómo va el mes visible desde el inicio.", [
-    "Registrar gastos e ingresos por categoría desde el chat (\"gasté 40€ en el súper\")",
-    "Presupuesto mensual con alertas si un gasto se sale de lo previsto",
-    "Resumen \"cómo vamos este mes\" en la pantalla de inicio",
-  ]);
+async function currencySymbol(env: Env): Promise<string> {
+  const row = await db(env).first<{ value: string }>("SELECT value FROM settings WHERE key = 'bot_currency'");
+  return row?.value || "€";
+}
+
+export async function renderFinanzasPage(env: Env): Promise<string> {
+  const d = db(env);
+  const cur = await currencySymbol(env);
+  const month = todayInTZ(env).slice(0, 7);
+
+  const rows = await d.all<Transaction>(
+    "SELECT * FROM transactions WHERE substr(date, 1, 7) = ? ORDER BY date DESC, created_at DESC",
+    [month],
+  );
+  const totalIngresos = rows.filter((r) => r.type === "ingreso").reduce((s, r) => s + r.amount, 0);
+  const totalGastos = rows.filter((r) => r.type === "gasto").reduce((s, r) => s + r.amount, 0);
+  const balance = totalIngresos - totalGastos;
+
+  const byCategory = new Map<string, number>();
+  for (const r of rows.filter((r) => r.type === "gasto")) byCategory.set(r.category, (byCategory.get(r.category) ?? 0) + r.amount);
+
+  const budgets = await d.all<Budget>("SELECT * FROM budgets ORDER BY category ASC");
+
+  const budgetRow = (b: Budget) => {
+    const spent = byCategory.get(b.category) ?? 0;
+    const pct = Math.min(100, Math.round((spent / b.monthly_limit) * 100));
+    const over = spent > b.monthly_limit;
+    return `<div class="budget-row">
+      <div class="budget-head"><b>${esc(b.category)}</b><span class="${over ? "over" : ""}">${spent.toFixed(2)}${cur} / ${b.monthly_limit.toFixed(2)}${cur}</span></div>
+      <div class="budget-bar"><div class="budget-fill ${over ? "over" : ""}" style="width:${pct}%"></div></div>
+    </div>`;
+  };
+
+  const memberRows = await listMembers(d);
+  const nameById = new Map(memberRows.map((m) => [m.id, m.name]));
+  const txRow = (t: Transaction) => `<li>
+    <div class="rem-info">
+      <span class="txt">${t.type === "gasto" ? "🔻" : "🔺"} ${esc(t.description || t.category)}</span>
+      <span class="meta">${esc(t.category)} · ${esc(t.date)}${t.member_id ? ` · ${esc(nameById.get(t.member_id) ?? "")}` : ""}</span>
+    </div>
+    <span class="row-right">
+      <b class="${t.type === "gasto" ? "amount-out" : "amount-in"}">${t.type === "gasto" ? "-" : "+"}${t.amount.toFixed(2)}${cur}</b>
+      <button class="del" data-del="/familia/transaccion/${t.id}/borrar" title="Borrar">✕</button>
+    </span>
+  </li>`;
+
+  const body = `
+    <section class="panel">
+      <h2>💶 Este mes</h2>
+      <div class="menu-grid">
+        <div><span>Ingresos</span><b>${totalIngresos.toFixed(2)}${cur}</b></div>
+        <div><span>Gastos</span><b>${totalGastos.toFixed(2)}${cur}</b></div>
+        <div><span>Balance</span><b class="${balance < 0 ? "amount-out" : "amount-in"}">${balance.toFixed(2)}${cur}</b></div>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>🎯 Presupuestos</h2>
+      ${budgets.length ? budgets.map(budgetRow).join("") : `<p class="empty-row">Sin presupuestos definidos todavía.</p>`}
+      <form class="add-form" method="post" action="/familia/presupuesto">
+        <input type="text" name="categoria" placeholder="Categoría (o 'Total')" required>
+        <input type="number" step="0.01" name="montoMensual" placeholder="Límite mensual" required>
+        <button type="submit">Guardar presupuesto</button>
+      </form>
+    </section>
+    <section class="panel">
+      <h2>📋 Movimientos del mes</h2>
+      <ul class="chores rem-list">${rows.length ? rows.map(txRow).join("") : `<li class="empty-row">Sin movimientos este mes.</li>`}</ul>
+      <form class="add-form" method="post" action="/familia/transaccion">
+        <select name="tipo"><option value="gasto">Gasto</option><option value="ingreso">Ingreso</option></select>
+        <input type="number" step="0.01" name="monto" placeholder="Monto" required>
+        <input type="text" name="categoria" placeholder="Categoría" required>
+        <input type="text" name="descripcion" placeholder="Descripción (opcional)">
+        <input type="date" name="fecha">
+        <button type="submit">+ Registrar</button>
+      </form>
+    </section>`;
+  return layout(env, "Finanzas", "finanzas", body);
 }
 
 const KIND_LABEL: Record<string, string> = { casa: "🏠 En casa", aire_libre: "🌳 Al aire libre", fin_semana: "🎉 Fin de semana" };
@@ -767,6 +877,7 @@ const SHARED_STYLE = `
     .card, .panel, nav, .hub-card, .add-form, .add-member form, .menu-form, select, input, .field input, .field select, .day-card { background:#171b24 !important; border-color:#2a2f3c !important; color:#e8eaf2 !important; }
     .row span, .meta, .role, .hub-card p, .day-date, .recipe { color:#9aa0b4 !important; }
     li, .meal-slot { border-bottom-color:#242938 !important; border-top-color:#242938 !important; }
+    .budget-bar { background:#242938; }
   }
   header { padding:22px 20px 10px; text-align:center; }
   header h1 { margin:0; font-size:1.35rem; }
@@ -833,6 +944,15 @@ const SHARED_STYLE = `
   .del { border:none; background:none; color:#d1d5db; font-size:.95rem; cursor:pointer; padding:2px 6px; }
   .rem-list li { align-items:flex-start; }
   .rem-info { display:flex; flex-direction:column; gap:2px; }
+  .amount-in { color:#16a34a; }
+  .amount-out { color:#b91c1c; }
+  .budget-row { margin-bottom:14px; }
+  .budget-row:last-of-type { margin-bottom:18px; }
+  .budget-head { display:flex; justify-content:space-between; font-size:.85rem; margin-bottom:5px; }
+  .budget-head span.over { color:#b91c1c; font-weight:600; }
+  .budget-bar { height:8px; border-radius:999px; background:#f0f0f3; overflow:hidden; }
+  .budget-fill { height:100%; background:#4a6cf7; border-radius:999px; }
+  .budget-fill.over { background:#ef4444; }
   .rem-form select { flex:1 1 110px; }
   .del:hover { color:#ef4444; }
   .add-form { padding-top:10px; margin-top:8px; border-top:1px dashed #e5e7eb; }
