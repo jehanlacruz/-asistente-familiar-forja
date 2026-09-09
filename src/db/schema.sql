@@ -476,10 +476,12 @@ CREATE TABLE IF NOT EXISTS transactions (
   category TEXT NOT NULL,
   description TEXT,
   member_id TEXT,
+  fund_id TEXT,
   date TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE SET NULL
+  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE SET NULL,
+  FOREIGN KEY (fund_id) REFERENCES finance_funds(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category);
@@ -491,3 +493,33 @@ CREATE TABLE IF NOT EXISTS budgets (
   monthly_limit REAL NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- Sobres/fondos financieros (presupuesto por sobres, no solo tope simple):
+-- kind='porcentaje' reparte ese % de cada ingreso; 'fijo' se rellena hasta
+-- monthly_target cada mes (alquiler, comida...); 'ahorro' recibe lo que
+-- sobra de un ingreso después de repartir porcentajes y fijos.
+CREATE TABLE IF NOT EXISTS finance_funds (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  percentage REAL,
+  monthly_target REAL,
+  notes TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_funds_name ON finance_funds(name);
+
+-- Dinero que entró a un sobre (desde un ingreso). El balance del sobre =
+-- SUM(fund_allocations.amount) - SUM(transactions.amount gasto con ese fund_id).
+CREATE TABLE IF NOT EXISTS fund_allocations (
+  id TEXT PRIMARY KEY,
+  fund_id TEXT NOT NULL,
+  transaction_id TEXT,
+  amount REAL NOT NULL,
+  date TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (fund_id) REFERENCES finance_funds(id) ON DELETE CASCADE,
+  FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fund_alloc_fund ON fund_allocations(fund_id);

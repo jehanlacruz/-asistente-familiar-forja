@@ -20,11 +20,14 @@ import {
   zonedDateTimeToUtcMs,
   formatDateTimeInTZ,
   sendTelegramMessage,
+  fundBalance,
+  allocateIncomeToFunds,
   type FamilyMember,
   type Chore,
   type Reminder,
   type Transaction,
   type Budget,
+  type FinanceFund,
 } from "./family-lib";
 
 async function requireFullAccessSender(
@@ -667,27 +670,53 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
 
   const registrarTransaccion = tool({
     description:
-      "Registra un ingreso o un gasto (ej. 'gasté 40€ en el súper', 'entraron 1200€ de nómina'). Si es un gasto y hay presupuesto definido para esa categoría (o 'Total'), avisa si se pasa del límite del mes.",
+      "Registra un ingreso o un gasto. Si es un INGRESO y hay sobres/fondos definidos (definirFondoFinanciero), el dinero se reparte SOLO entre ellos automáticamente (porcentajes primero, luego fijos como alquiler/comida hasta su meta del mes, el resto a ahorro) — te devuelve el reparto para que se lo cuentes a la familia. Si es un GASTO y coincide con un sobre (por categoría o por el parámetro fondo), se descuenta de ese sobre y avisa si lo deja en negativo; si hay presupuesto simple definido para la categoría (o 'Total'), también avisa si se pasa.",
     inputSchema: z.object({
       tipo: z.enum(["ingreso", "gasto"]),
       monto: z.number().positive(),
-      categoria: z.string().describe("ej. 'Súper', 'Transporte', 'Ocio', 'Nómina'"),
-      descripcion: z.string().optional(),
+      categoria: z.string().describe("ej. 'Súper', 'Alquiler', 'Nómina de Jehan', 'Freelance'"),
+      descripcion: z.string().optional().describe("Para ingresos, de dónde viene; para gastos, detalle corto"),
       fecha: z.string().optional().describe("YYYY-MM-DD, por default hoy"),
+      fondo: z.string().optional().describe("Solo gastos: nombre exacto del sobre del que sale el dinero, si no coincide con la categoría"),
     }),
-    execute: async ({ tipo, monto, categoria, descripcion, fecha }) => {
+    execute: async ({ tipo, monto, categoria, descripcion, fecha, fondo }) => {
       const date = fecha ?? todayInTZ(ctx.env);
       const month = date.slice(0, 7);
       const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
       const sender = senderChatId ? await findMemberByChatId(d, senderChatId) : null;
       const now = Date.now();
+      const txId = newId();
+
+      let fundId: string | null = null;
+      if (tipo === "gasto") {
+        const fundName = fondo ?? categoria;
+        const fund = await d.first<FinanceFund>("SELECT * FROM finance_funds WHERE lower(name) = lower(?)", [fundName]);
+        fundId = fund?.id ?? null;
+      }
+
       await d.run(
-        `INSERT INTO transactions (id, type, amount, category, description, member_id, date, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [newId(), tipo, monto, categoria, descripcion ?? null, sender?.id ?? null, date, now, now],
+        `INSERT INTO transactions (id, type, amount, category, description, member_id, fund_id, date, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [txId, tipo, monto, categoria, descripcion ?? null, sender?.id ?? null, fundId, date, now, now],
       );
 
-      if (tipo !== "gasto") return { ok: true, mensaje: `Ingreso de ${monto} en "${categoria}" registrado.` };
+      if (tipo === "ingreso") {
+        const reparto = await allocateIncomeToFunds(d, txId, monto, date);
+        return {
+          ok: true,
+          mensaje: `Ingreso de ${monto} (${categoria}) registrado.`,
+          repartoEnSobres: reparto.length
+            ? reparto.map((r) => `${r.fondo}: ${r.monto.toFixed(2)}`)
+            : ["No hay sobres/fondos definidos todavía — usa definirFondoFinanciero si quieren repartir automático."],
+        };
+      }
+
+      const alertas: string[] = [];
+
+      if (fundId) {
+        const balance = await fundBalance(d, fundId);
+        if (balance < 0) alertas.push(`El sobre "${fondo ?? categoria}" quedó en negativo: ${balance.toFixed(2)}.`);
+      }
 
       const checkBudget = async (cat: string) => {
         const budget = await d.first<Budget>("SELECT * FROM budgets WHERE category = ?", [cat]);
@@ -699,24 +728,18 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         const total = spent?.total ?? 0;
         return total > budget.monthly_limit ? { cat, total, limit: budget.monthly_limit } : null;
       };
-
       const overCategory = await checkBudget(categoria);
       const overTotal = categoria !== "Total" ? await checkBudget("Total") : null;
-      const alerts = [overCategory, overTotal].filter((x): x is NonNullable<typeof x> => x != null);
-
-      if (alerts.length) {
-        const owner = ctx.env.OWNER_TELEGRAM_CHAT_ID;
-        for (const a of alerts) {
-          const msg = `💸 Presupuesto de "${a.cat}" superado este mes: llevas ${a.total.toFixed(2)} de ${a.limit.toFixed(2)}.`;
-          if (owner) await sendTelegramMessage(ctx.env, owner, msg).catch(() => {});
-        }
+      for (const a of [overCategory, overTotal].filter((x): x is NonNullable<typeof x> => x != null)) {
+        alertas.push(`Presupuesto de "${a.cat}" superado este mes: llevas ${a.total.toFixed(2)} de ${a.limit.toFixed(2)}.`);
       }
 
-      return {
-        ok: true,
-        mensaje: `Gasto de ${monto} en "${categoria}" registrado.`,
-        alertasPresupuesto: alerts.map((a) => `"${a.cat}": llevas ${a.total.toFixed(2)} de ${a.limit.toFixed(2)} este mes — avísale a la familia.`),
-      };
+      if (alertas.length) {
+        const owner = ctx.env.OWNER_TELEGRAM_CHAT_ID;
+        for (const msg of alertas) if (owner) await sendTelegramMessage(ctx.env, owner, `💸 ${msg}`).catch(() => {});
+      }
+
+      return { ok: true, mensaje: `Gasto de ${monto} en "${categoria}" registrado.`, alertas };
     },
   });
 
@@ -774,6 +797,50 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         result.push({ categoria: b.category, presupuesto: b.monthly_limit, gastado: spent?.total ?? 0 });
       }
       return { mes: month, presupuestos: result };
+    },
+  });
+
+  const definirFondoFinanciero = tool({
+    description:
+      "Define o actualiza un sobre/fondo financiero para repartir los ingresos automáticamente: 'porcentaje' (ej. 10% para Imprevistos, 10% para Actividades), 'fijo' (un monto mensual objetivo, ej. Alquiler 800, Comida 400 — se va rellenando con cada ingreso hasta llegar a la meta del mes), o 'ahorro' (recibe lo que sobra después de repartir los de arriba, ideal para tener varios sitios de ahorro separados). Antes de crear varios de golpe, PREGÚNTALE a la familia qué porcentajes y montos quieren — no los inventes.",
+    inputSchema: z.object({
+      nombre: z.string().describe("ej. 'Imprevistos', 'Actividades', 'Alquiler', 'Comida', 'Ahorro vacaciones'"),
+      tipo: z.enum(["porcentaje", "fijo", "ahorro"]),
+      porcentaje: z.number().min(0).max(100).optional().describe("Requerido si tipo='porcentaje'"),
+      montoMensual: z.number().positive().optional().describe("Requerido si tipo='fijo': meta mensual (ej. renta, comida)"),
+      notas: z.string().optional(),
+    }),
+    execute: async ({ nombre, tipo, porcentaje, montoMensual, notas }) => {
+      if (tipo === "porcentaje" && porcentaje == null) return { error: "Falta el porcentaje para este sobre." };
+      if (tipo === "fijo" && montoMensual == null) return { error: "Falta el monto mensual para este sobre." };
+      const now = Date.now();
+      await d.run(
+        `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, notes = excluded.notes, updated_at = excluded.updated_at`,
+        [newId(), nombre, tipo, porcentaje ?? null, montoMensual ?? null, notas ?? null, now, now],
+      );
+      return { ok: true, mensaje: `Sobre "${nombre}" (${tipo}${tipo === "porcentaje" ? ` ${porcentaje}%` : tipo === "fijo" ? ` ${montoMensual}/mes` : ""}) guardado. Se aplica desde el próximo ingreso que registres.` };
+    },
+  });
+
+  const listarFondosFinancieros = tool({
+    description: "Lista los sobres/fondos definidos con su saldo actual (lo asignado menos lo gastado de cada uno).",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const funds = await d.all<FinanceFund>("SELECT * FROM finance_funds ORDER BY created_at ASC");
+      const result = [];
+      for (const f of funds) {
+        result.push({
+          nombre: f.name,
+          tipo: f.kind,
+          porcentaje: f.percentage,
+          metaMensual: f.monthly_target,
+          saldoActual: await fundBalance(d, f.id),
+          notas: f.notes,
+        });
+      }
+      return { sobres: result };
     },
   });
 
@@ -909,6 +976,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     listarTransacciones,
     definirPresupuesto,
     consultarPresupuestos,
+    definirFondoFinanciero,
+    listarFondosFinancieros,
     unirseConEnlace,
   };
 }

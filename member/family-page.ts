@@ -20,12 +20,15 @@ import {
   isChorePending,
   zonedDateTimeToUtcMs,
   formatDateTimeInTZ,
+  fundBalance,
+  allocateIncomeToFunds,
   type FamilyMember,
   type Chore,
   type Reminder,
   type FamilyActivity,
   type Transaction,
   type Budget,
+  type FinanceFund,
 } from "./family-lib";
 import type { Env } from "../src/env";
 
@@ -187,17 +190,31 @@ export async function deleteActivity(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM family_activities WHERE id = ?", [id]);
 }
 
-export async function addTransactionFromForm(env: Env, form: Record<string, string>): Promise<void> {
+export async function addTransactionFromForm(env: Env, form: Record<string, string>): Promise<{ reparto?: { fondo: string; monto: number }[] }> {
   const categoria = (form.categoria || "").trim();
   const monto = Number(form.monto);
-  if (!categoria || !monto) return;
+  if (!categoria || !monto) return {};
   const d = db(env);
   const now = Date.now();
+  const date = form.fecha || todayInTZ(env);
+  const tipo = form.tipo === "ingreso" ? "ingreso" : "gasto";
+  const txId = newId();
+
+  let fundId: string | null = null;
+  if (tipo === "gasto") {
+    const fundName = form.fondo || categoria;
+    const fund = await d.first<{ id: string }>("SELECT id FROM finance_funds WHERE lower(name) = lower(?)", [fundName]);
+    fundId = fund?.id ?? null;
+  }
+
   await d.run(
-    `INSERT INTO transactions (id, type, amount, category, description, member_id, date, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
-    [newId(), form.tipo === "ingreso" ? "ingreso" : "gasto", monto, categoria, form.descripcion || null, form.fecha || todayInTZ(env), now, now],
+    `INSERT INTO transactions (id, type, amount, category, description, member_id, fund_id, date, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+    [txId, tipo, monto, categoria, form.descripcion || null, fundId, date, now, now],
   );
+
+  if (tipo === "ingreso") return { reparto: await allocateIncomeToFunds(d, txId, monto, date) };
+  return {};
 }
 
 export async function deleteTransaction(env: Env, id: string): Promise<void> {
@@ -213,6 +230,25 @@ export async function setBudgetFromForm(env: Env, form: Record<string, string>):
      ON CONFLICT(category) DO UPDATE SET monthly_limit = excluded.monthly_limit, updated_at = excluded.updated_at`,
     [categoria, monto, Date.now()],
   );
+}
+
+export async function setFundFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const nombre = (form.nombre || "").trim();
+  const tipo = form.tipo === "fijo" || form.tipo === "ahorro" ? form.tipo : "porcentaje";
+  if (!nombre) return;
+  const porcentaje = form.porcentaje ? Number(form.porcentaje) : null;
+  const montoMensual = form.montoMensual ? Number(form.montoMensual) : null;
+  const now = Date.now();
+  await db(env).run(
+    `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, updated_at = excluded.updated_at`,
+    [newId(), nombre, tipo, porcentaje, montoMensual, null, now, now],
+  );
+}
+
+export async function deleteFund(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM finance_funds WHERE id = ?", [id]);
 }
 
 export async function deleteMember(env: Env, id: string): Promise<void> {
@@ -804,6 +840,25 @@ export async function renderFinanzasPage(env: Env): Promise<string> {
     </span>
   </li>`;
 
+  const funds = await d.all<FinanceFund>("SELECT * FROM finance_funds ORDER BY created_at ASC");
+  const FUND_KIND_LABEL: Record<string, string> = { porcentaje: "%", fijo: "fijo/mes", ahorro: "ahorro" };
+  const fundRow = async (f: FinanceFund) => {
+    const saldo = await fundBalance(d, f.id);
+    const target = f.kind === "fijo" ? f.monthly_target : null;
+    const pct = target ? Math.min(100, Math.round((saldo / target) * 100)) : null;
+    return `<div class="budget-row">
+      <div class="budget-head">
+        <b>${esc(f.name)} <span class="meta">(${FUND_KIND_LABEL[f.kind] ?? f.kind}${f.kind === "porcentaje" ? ` ${f.percentage}%` : ""})</span></b>
+        <span class="row-right">
+          <span class="${saldo < 0 ? "over" : ""}">${saldo.toFixed(2)}${cur}${target ? ` / ${target.toFixed(2)}${cur}` : ""}</span>
+          <button class="del" data-del="/familia/fondo/${f.id}/borrar" title="Borrar">✕</button>
+        </span>
+      </div>
+      ${pct != null ? `<div class="budget-bar"><div class="budget-fill ${saldo < 0 ? "over" : ""}" style="width:${Math.max(0, pct)}%"></div></div>` : ""}
+    </div>`;
+  };
+  const fundsHtml = funds.length ? (await Promise.all(funds.map(fundRow))).join("") : `<p class="empty-row">Sin sobres definidos — pídele al bot: "quiero guardar 10% para imprevistos y 10% para actividades".</p>`;
+
   const body = `
     <section class="panel">
       <h2>💶 Este mes</h2>
@@ -814,7 +869,23 @@ export async function renderFinanzasPage(env: Env): Promise<string> {
       </div>
     </section>
     <section class="panel">
-      <h2>🎯 Presupuestos</h2>
+      <h2>💰 Sobres / fondos</h2>
+      ${fundsHtml}
+      <form class="add-form" method="post" action="/familia/fondo">
+        <input type="text" name="nombre" placeholder="Nombre (ej. Imprevistos)" required>
+        <select name="tipo">
+          <option value="porcentaje">% de cada ingreso</option>
+          <option value="fijo">Monto fijo mensual</option>
+          <option value="ahorro">Ahorro (lo que sobre)</option>
+        </select>
+        <input type="number" step="0.1" name="porcentaje" placeholder="% (si aplica)">
+        <input type="number" step="0.01" name="montoMensual" placeholder="Meta mensual (si aplica)">
+        <button type="submit">+ Crear sobre</button>
+      </form>
+      <p class="soon-note">Al registrar un ingreso, se reparte solo: primero los % , luego los fijos hasta su meta del mes, el resto a ahorro.</p>
+    </section>
+    <section class="panel">
+      <h2>🎯 Presupuestos simples</h2>
       ${budgets.length ? budgets.map(budgetRow).join("") : `<p class="empty-row">Sin presupuestos definidos todavía.</p>`}
       <form class="add-form" method="post" action="/familia/presupuesto">
         <input type="text" name="categoria" placeholder="Categoría (o 'Total')" required>
@@ -829,7 +900,8 @@ export async function renderFinanzasPage(env: Env): Promise<string> {
         <select name="tipo"><option value="gasto">Gasto</option><option value="ingreso">Ingreso</option></select>
         <input type="number" step="0.01" name="monto" placeholder="Monto" required>
         <input type="text" name="categoria" placeholder="Categoría" required>
-        <input type="text" name="descripcion" placeholder="Descripción (opcional)">
+        <input type="text" name="descripcion" placeholder="Descripción / fuente (opcional)">
+        <input type="text" name="fondo" placeholder="Sobre del que sale (gastos, opcional)">
         <input type="date" name="fecha">
         <button type="submit">+ Registrar</button>
       </form>

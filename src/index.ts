@@ -36,6 +36,8 @@ import {
   addTransactionFromForm,
   deleteTransaction,
   setBudgetFromForm,
+  setFundFromForm,
+  deleteFund,
   renderNinosPage,
   addActivityFromForm,
   toggleActivityFavorite,
@@ -697,6 +699,14 @@ app.post("/familia/transaccion/:id/borrar", async (c) => {
 app.post("/familia/presupuesto", async (c) => {
   await setBudgetFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
   return c.redirect("/familia/finanzas");
+});
+app.post("/familia/fondo", async (c) => {
+  await setFundFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/finanzas");
+});
+app.post("/familia/fondo/:id/borrar", async (c) => {
+  await deleteFund(c.env, c.req.param("id"));
+  return c.body(null, 204);
 });
 app.get("/familia/ninos", async (c) => c.html(await renderNinosPage(c.env)));
 app.post("/familia/actividad", async (c) => {

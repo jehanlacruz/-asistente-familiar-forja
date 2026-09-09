@@ -32,6 +32,7 @@ export interface Transaction {
   category: string;
   description: string | null;
   member_id: string | null;
+  fund_id: string | null;
   date: string;
   created_at: number;
   updated_at: number;
@@ -40,6 +41,17 @@ export interface Transaction {
 export interface Budget {
   category: string;
   monthly_limit: number;
+  updated_at: number;
+}
+
+export interface FinanceFund {
+  id: string;
+  name: string;
+  kind: "porcentaje" | "fijo" | "ahorro";
+  percentage: number | null;
+  monthly_target: number | null;
+  notes: string | null;
+  created_at: number;
   updated_at: number;
 }
 
@@ -233,6 +245,71 @@ export async function sendTelegramMessage(env: Env, chatId: string, text: string
     body: JSON.stringify({ chat_id: chatId, text }),
   });
   return res.ok;
+}
+
+/** Balance actual de un sobre: lo asignado (fund_allocations) menos lo gastado con ese fund_id. */
+export async function fundBalance(d: Db, fundId: string): Promise<number> {
+  const alloc = await d.first<{ total: number }>("SELECT COALESCE(SUM(amount), 0) as total FROM fund_allocations WHERE fund_id = ?", [fundId]);
+  const spent = await d.first<{ total: number }>(
+    "SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'gasto' AND fund_id = ?",
+    [fundId],
+  );
+  return (alloc?.total ?? 0) - (spent?.total ?? 0);
+}
+
+/** Reparte un ingreso entre los sobres definidos: % primero, luego fijos hasta su meta del mes, el resto a ahorro. */
+export async function allocateIncomeToFunds(
+  d: Db,
+  transactionId: string,
+  amount: number,
+  date: string,
+): Promise<{ fondo: string; monto: number }[]> {
+  const month = date.slice(0, 7);
+  const funds = await d.all<FinanceFund>("SELECT * FROM finance_funds ORDER BY created_at ASC");
+  if (!funds.length) return [];
+  const now = Date.now();
+  const breakdown: { fondo: string; monto: number }[] = [];
+  let remaining = amount;
+
+  const insertAlloc = async (fundId: string, amt: number) => {
+    if (amt <= 0) return;
+    await d.run(
+      `INSERT INTO fund_allocations (id, fund_id, transaction_id, amount, date, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [newId(), fundId, transactionId, amt, date, now],
+    );
+  };
+
+  for (const f of funds.filter((f) => f.kind === "porcentaje" && f.percentage)) {
+    const amt = Math.round(amount * (f.percentage! / 100) * 100) / 100;
+    await insertAlloc(f.id, amt);
+    breakdown.push({ fondo: f.name, monto: amt });
+    remaining -= amt;
+  }
+
+  for (const f of funds.filter((f) => f.kind === "fijo" && f.monthly_target)) {
+    const already = await d.first<{ total: number }>(
+      "SELECT COALESCE(SUM(amount), 0) as total FROM fund_allocations WHERE fund_id = ? AND substr(date, 1, 7) = ?",
+      [f.id, month],
+    );
+    const shortfall = Math.max(0, f.monthly_target! - (already?.total ?? 0));
+    const amt = Math.min(shortfall, Math.max(0, remaining));
+    await insertAlloc(f.id, amt);
+    if (amt > 0) breakdown.push({ fondo: f.name, monto: amt });
+    remaining -= amt;
+  }
+
+  const ahorroFunds = funds.filter((f) => f.kind === "ahorro");
+  if (ahorroFunds.length && remaining > 0) {
+    const each = Math.round((remaining / ahorroFunds.length) * 100) / 100;
+    for (const f of ahorroFunds) {
+      await insertAlloc(f.id, each);
+      breakdown.push({ fondo: f.name, monto: each });
+    }
+    remaining = 0;
+  }
+
+  if (remaining > 0.01) breakdown.push({ fondo: "Sin asignar", monto: Math.round(remaining * 100) / 100 });
+  return breakdown;
 }
 
 export const db = (env: Env) => new Db(env.DB);
