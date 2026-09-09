@@ -87,6 +87,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         .enum(["bajar_peso", "mantener", "ganar_musculo", "comer_mas_sano"])
         .optional()
         .describe("Objetivo para el menú/ejercicio de este integrante"),
+      nivelFisico: z.enum(["bajo", "medio", "alto"]).optional().describe("Nivel actual de condición física"),
+      tiempoDisponible: z.string().optional().describe("ej. '3 veces por semana, 30 min'"),
+      lesiones: z.string().optional().describe("Lesiones o limitaciones físicas a respetar en el plan de ejercicio"),
     }),
     execute: async (input) => {
       const total = await countMembers(d);
@@ -112,8 +115,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
 
       await d.run(
         `INSERT INTO family_members
-          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, fitness_level, time_available, injuries, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           input.nombre,
@@ -127,6 +130,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
           input.nacionalidad ?? null,
           input.alergias ?? null,
           input.objetivoNutricional ?? null,
+          input.nivelFisico ?? null,
+          input.tiempoDisponible ?? null,
+          input.lesiones ?? null,
           now,
           now,
         ],
@@ -192,6 +198,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       preferenciasComida: z.string().optional().describe("Platillos o gustos de comida"),
       alergias: z.string().optional().describe("Alergias o restricciones alimentarias"),
       objetivoNutricional: z.enum(["bajar_peso", "mantener", "ganar_musculo", "comer_mas_sano"]).optional(),
+      nivelFisico: z.enum(["bajo", "medio", "alto"]).optional(),
+      tiempoDisponible: z.string().optional().describe("ej. '3 veces por semana, 30 min'"),
+      lesiones: z.string().optional(),
     }),
     execute: async ({ nombre, ...fields }) => {
       const check = await requireFullAccessSender(ctx);
@@ -211,6 +220,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         food_preferences: fields.preferenciasComida,
         allergies: fields.alergias,
         nutrition_goal: fields.objetivoNutricional,
+        fitness_level: fields.nivelFisico,
+        time_available: fields.tiempoDisponible,
+        injuries: fields.lesiones,
       };
       for (const [col, val] of Object.entries(map)) {
         if (val !== undefined) {
@@ -491,6 +503,62 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const consultarPerfilFisicoFamilia = tool({
+    description:
+      "Trae el perfil físico de toda la familia (edad, IMC, nivel actual, tiempo disponible, lesiones/limitaciones, objetivo) — úsalo antes de armar un plan de ejercicio para que sea de verdad personalizado, no genérico.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const members = await listMembers(d);
+      return {
+        integrantes: members.map((m) => {
+          const bmi = bmiInfo(m.weight_kg, m.height_cm);
+          return {
+            nombre: m.name,
+            edad: ageFromBirthdate(m.birthdate),
+            imc: bmi?.bmi ?? null,
+            categoriaImc: bmi?.category ?? null,
+            nivelFisico: m.fitness_level,
+            tiempoDisponible: m.time_available,
+            lesiones: m.injuries,
+            objetivo: m.nutrition_goal,
+          };
+        }),
+      };
+    },
+  });
+
+  const guardarPlanEjercicio = tool({
+    description:
+      "Guarda (o reemplaza) el plan de ejercicio semanal narrativo de un integrante — texto libre con qué hacer cada día. Además de esto, crea las sesiones como tareas con registrarTareaCasa (categoria='ejercicio') para que se puedan marcar como hechas y dar seguimiento.",
+    inputSchema: z.object({
+      nombre: z.string(),
+      plan: z.string().describe("Plan semanal completo, día por día, adaptado al nivel/tiempo/lesiones de la persona"),
+    }),
+    execute: async ({ nombre, plan }) => {
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+      const now = Date.now();
+      await d.run(
+        `INSERT INTO exercise_plan (member_id, plan_text, created_at, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(member_id) DO UPDATE SET plan_text = excluded.plan_text, updated_at = excluded.updated_at`,
+        [member.id, plan, now, now],
+      );
+      return { ok: true, mensaje: `Plan de ejercicio de ${nombre} guardado. Ahora crea las sesiones de la semana con registrarTareaCasa (categoria='ejercicio', asignadoA='${nombre}') para poder marcarlas como hechas.` };
+    },
+  });
+
+  const consultarPlanEjercicio = tool({
+    description: "Consulta el plan de ejercicio guardado de un integrante.",
+    inputSchema: z.object({ nombre: z.string() }),
+    execute: async ({ nombre }) => {
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+      const row = await d.first<{ plan_text: string }>("SELECT plan_text FROM exercise_plan WHERE member_id = ?", [member.id]);
+      if (!row) return { definido: false };
+      return { definido: true, plan: row.plan_text };
+    },
+  });
+
   const unirseConEnlace = tool({
     description:
       "Conecta a quien escribe con su perfil de familia usando el código de un enlace de invitación (mensajes que empiezan con '/start '). Llama esta tool SIEMPRE que el mensaje sea justo eso, antes de responder cualquier otra cosa.",
@@ -611,6 +679,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     definirMenuDia,
     consultarMenuDia,
     consultarPerfilNutricionalFamilia,
+    consultarPerfilFisicoFamilia,
+    guardarPlanEjercicio,
+    consultarPlanEjercicio,
     unirseConEnlace,
   };
 }

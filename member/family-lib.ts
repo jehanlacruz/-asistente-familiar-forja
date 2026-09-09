@@ -17,6 +17,9 @@ export interface FamilyMember {
   food_preferences: string | null;
   allergies: string | null;
   nutrition_goal: string | null;
+  fitness_level: string | null;
+  time_available: string | null;
+  injuries: string | null;
   created_at: number;
   updated_at: number;
 }

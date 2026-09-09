@@ -27,6 +27,7 @@ import {
   renderHome,
   renderIntegrantesPage,
   renderTareasPage,
+  renderEjercicioPage,
   renderMenuPage,
   renderCompraPage,
   renderRecordatoriosPage,
@@ -623,6 +624,7 @@ app.use("/familia/*", async (c, next) => adminAuth(c.env)(c, next));
 app.get("/familia", async (c) => c.html(await renderHome(c.env)));
 app.get("/familia/integrantes", async (c) => c.html(await renderIntegrantesPage(c.env)));
 app.get("/familia/tareas", async (c) => c.html(await renderTareasPage(c.env)));
+app.get("/familia/ejercicio", async (c) => c.html(await renderEjercicioPage(c.env)));
 app.get("/familia/menu", async (c) => c.html(await renderMenuPage(c.env)));
 app.get("/familia/compra", async (c) => c.html(await renderCompraPage(c.env)));
 app.get("/familia/recordatorios", async (c) => c.html(await renderRecordatoriosPage(c.env)));

@@ -346,6 +346,9 @@ CREATE TABLE IF NOT EXISTS family_members (
   food_preferences TEXT,
   allergies TEXT,
   nutrition_goal TEXT,
+  fitness_level TEXT,
+  time_available TEXT,
+  injuries TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -422,3 +425,13 @@ CREATE TABLE IF NOT EXISTS reminders (
   FOREIGN KEY (target_member) REFERENCES family_members(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
+
+-- Plan de ejercicio narrativo, uno activo por integrante (upsert por member_id).
+-- El cumplimiento día a día se rastrea con household_chores (category='ejercicio').
+CREATE TABLE IF NOT EXISTS exercise_plan (
+  member_id TEXT PRIMARY KEY,
+  plan_text TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE
+);

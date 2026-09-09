@@ -101,8 +101,8 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
   const now = Date.now();
   await d.run(
     `INSERT INTO family_members
-      (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, fitness_level, time_available, injuries, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newId(),
       nombre,
@@ -116,6 +116,9 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
       form.preferenciasComida || null,
       form.alergias || null,
       form.objetivoNutricional || null,
+      form.nivelFisico || null,
+      form.tiempoDisponible || null,
+      form.lesiones || null,
       now,
       now,
     ],
@@ -127,7 +130,8 @@ export async function updateMemberFromForm(env: Env, id: string, form: Record<st
   await d.run(
     `UPDATE family_members SET
       name = ?, role = ?, access_level = ?, birthdate = ?, weight_kg = ?, height_cm = ?,
-      clothing_size = ?, nationality = ?, food_preferences = ?, allergies = ?, nutrition_goal = ?, updated_at = ?
+      clothing_size = ?, nationality = ?, food_preferences = ?, allergies = ?, nutrition_goal = ?,
+      fitness_level = ?, time_available = ?, injuries = ?, updated_at = ?
      WHERE id = ?`,
     [
       (form.nombre || "").trim(),
@@ -141,6 +145,9 @@ export async function updateMemberFromForm(env: Env, id: string, form: Record<st
       form.preferenciasComida || null,
       form.alergias || null,
       form.objetivoNutricional || null,
+      form.nivelFisico || null,
+      form.tiempoDisponible || null,
+      form.lesiones || null,
       Date.now(),
       id,
     ],
@@ -199,6 +206,7 @@ const NAV = [
   { key: "inicio", href: "/familia", icon: "🏠", label: "Inicio" },
   { key: "integrantes", href: "/familia/integrantes", icon: "👪", label: "Integrantes" },
   { key: "tareas", href: "/familia/tareas", icon: "✅", label: "Tareas" },
+  { key: "ejercicio", href: "/familia/ejercicio", icon: "🏃", label: "Ejercicio" },
   { key: "compra", href: "/familia/compra", icon: "🛒", label: "Compra" },
   { key: "menu", href: "/familia/menu", icon: "🍽️", label: "Comida" },
   { key: "recordatorios", href: "/familia/recordatorios", icon: "⏰", label: "Recordatorios" },
@@ -250,6 +258,13 @@ function goalOptions(selected: string | null | undefined): string {
   return opts.map(([v, label]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${esc(label)}</option>`).join("");
 }
 
+const FITNESS_LABEL: Record<string, string> = { bajo: "Bajo", medio: "Medio", alto: "Alto" };
+
+function fitnessOptions(selected: string | null | undefined): string {
+  const opts = [["", "Nivel físico: sin definir"], ...Object.entries(FITNESS_LABEL)];
+  return opts.map(([v, label]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${esc(label)}</option>`).join("");
+}
+
 function memberCard(m: FamilyMember): string {
   const edad = ageFromBirthdate(m.birthdate);
   const bmi = bmiInfo(m.weight_kg, m.height_cm);
@@ -263,6 +278,8 @@ function memberCard(m: FamilyMember): string {
   if (m.food_preferences) rows.push(`<div class="row"><span>Le gusta</span><b>${esc(m.food_preferences)}</b></div>`);
   if (m.allergies) rows.push(`<div class="row"><span>Alergias</span><b>${esc(m.allergies)}</b></div>`);
   if (m.nutrition_goal) rows.push(`<div class="row"><span>Objetivo</span><b>${esc(GOAL_LABEL[m.nutrition_goal] ?? m.nutrition_goal)}</b></div>`);
+  if (m.fitness_level) rows.push(`<div class="row"><span>Nivel físico</span><b>${esc(FITNESS_LABEL[m.fitness_level] ?? m.fitness_level)}</b></div>`);
+  if (m.injuries) rows.push(`<div class="row"><span>Lesiones</span><b>${esc(m.injuries)}</b></div>`);
   const badge =
     m.access_level === "full"
       ? m.telegram_chat_id
@@ -366,7 +383,7 @@ export async function renderHome(env: Env): Promise<string> {
     ${hubCard("/familia/tareas", "✅", "Tareas de hoy", pendTareas.length ? `${pendTareas.length} pendiente${pendTareas.length === 1 ? "" : "s"}` : "Todo al día 🎉")}
     ${hubCard("/familia/compra", "🛒", "Lista de compras", (shoppingPending?.n ?? 0) > 0 ? `${shoppingPending?.n} por comprar` : "Nada pendiente")}
     ${hubCard("/familia/menu", "🍽️", "Menú de hoy", esc(menuResumen || "Sin definir todavía"))}
-    ${hubCard("/familia/tareas#ejercicio", "🏃", "Ejercicio", pendEjercicio.length ? `${pendEjercicio.length} rutina${pendEjercicio.length === 1 ? "" : "s"} pendiente${pendEjercicio.length === 1 ? "" : "s"}` : "Sin rutinas hoy")}
+    ${hubCard("/familia/ejercicio", "🏃", "Ejercicio", pendEjercicio.length ? `${pendEjercicio.length} rutina${pendEjercicio.length === 1 ? "" : "s"} pendiente${pendEjercicio.length === 1 ? "" : "s"}` : "Sin rutinas hoy")}
     ${hubCard("/familia/recordatorios", "⏰", "Recordatorios", nextReminder ? `${esc(nextReminder.title)} · ${esc(formatDateTimeInTZ(nextReminder.remind_at, env))}` : "Sin recordatorios programados")}
     ${hubCard("/familia/finanzas", "💶", "Finanzas", "Presupuesto del mes", true)}
     ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas para Aday y Adiel", true)}
@@ -394,6 +411,9 @@ export async function renderIntegrantesPage(env: Env): Promise<string> {
         <input type="text" name="preferenciasComida" placeholder="Le gusta comer…">
         <input type="text" name="alergias" placeholder="Alergias / restricciones">
         <select name="objetivoNutricional">${goalOptions(null)}</select>
+        <select name="nivelFisico">${fitnessOptions(null)}</select>
+        <input type="text" name="tiempoDisponible" placeholder="Tiempo disponible (ej. 3x/sem 30min)">
+        <input type="text" name="lesiones" placeholder="Lesiones / limitaciones">
         <button type="submit">Guardar integrante</button>
       </form>
     </details>`;
@@ -426,10 +446,39 @@ export async function renderTareasPage(env: Env): Promise<string> {
   const body = `
     ${section("diarias", "📋", "Tareas diarias", choreList(diarias, nameById, "Sin tareas diarias registradas.") + addChoreForm(members, "diaria", "tarea"))}
     ${section("puntuales", "✅", "Tareas puntuales", choreList(puntuales, nameById, "Sin tareas puntuales pendientes.") + addChoreForm(members, "puntual", "tarea"))}
-    ${section("ejercicio", "🏃", "Ejercicio", choreList(ejercicio, nameById, "Sin rutinas registradas.") + addChoreForm(members, "puntual", "ejercicio"))}
     ${section("asignadas", "🙋", "Quién hace qué", asignadasHtml)}
+    <p class="soon-note">El ejercicio tiene su propia página → <a href="/familia/ejercicio">Actividad física</a>.</p>
   `;
   return layout(env, "Tareas", "tareas", body);
+}
+
+// ── Página: Actividad física ────────────────────────────────────────────
+
+export async function renderEjercicioPage(env: Env): Promise<string> {
+  const d = db(env);
+  const { withPending, nameById } = await loadChores(env);
+  const ejercicio = withPending.filter((x) => x.c.category === "ejercicio");
+  const members = await listMembers(d);
+
+  const plans = await d.all<{ member_id: string; plan_text: string }>("SELECT member_id, plan_text FROM exercise_plan");
+  const planByMember = new Map(plans.map((p) => [p.member_id, p.plan_text]));
+
+  const planCard = (m: FamilyMember) => {
+    const plan = planByMember.get(m.id);
+    const mine = ejercicio.filter((x) => x.c.assigned_to === m.id);
+    const done = mine.filter((x) => !x.pending).length;
+    return `<div class="card">
+      <div class="card-head"><h3>${esc(m.name)}</h3>${mine.length ? `<span class="badge ${done === mine.length ? "ok" : "pending"}">${mine.length - done}/${mine.length} pendiente${mine.length - done === 1 ? "" : "s"}</span>` : ""}</div>
+      ${plan ? `<details><summary>Ver plan semanal</summary><div class="recipe">${esc(plan).replace(/\n/g, "<br>")}</div></details>` : `<p class="empty">Sin plan todavía — pídeselo al bot: "arma mi rutina de ejercicio".</p>`}
+    </div>`;
+  };
+
+  const body = `
+    <div class="grid">${members.map(planCard).join("") || `<div class="card">Todavía no hay integrantes.</div>`}</div>
+    ${section("ejercicio", "🏃", "Sesiones de esta semana", choreList(ejercicio, nameById, "Sin rutinas registradas todavía.") + addChoreForm(members, "puntual", "ejercicio"))}
+    <p class="soon-note">Para un plan personalizado (nivel, tiempo disponible, lesiones), pídeselo al bot por chat: "arma mi rutina de ejercicio" — usa tu perfil físico, editable en Integrantes.</p>
+  `;
+  return layout(env, "Ejercicio", "ejercicio", body);
 }
 
 // ── Página: Menú de hoy ─────────────────────────────────────────────────
@@ -611,6 +660,9 @@ export async function renderEditMemberPage(env: Env, id: string): Promise<string
       <label class="field">Le gusta comer<input type="text" name="preferenciasComida" value="${esc(m.food_preferences ?? "")}"></label>
       <label class="field">Alergias / restricciones<input type="text" name="alergias" value="${esc(m.allergies ?? "")}"></label>
       <label class="field">Objetivo nutricional<select name="objetivoNutricional">${goalOptions(m.nutrition_goal)}</select></label>
+      <label class="field">Nivel físico<select name="nivelFisico">${fitnessOptions(m.fitness_level)}</select></label>
+      <label class="field">Tiempo disponible<input type="text" name="tiempoDisponible" value="${esc(m.time_available ?? "")}"></label>
+      <label class="field">Lesiones / limitaciones<input type="text" name="lesiones" value="${esc(m.injuries ?? "")}"></label>
       <div class="btn-row">
         <button type="submit">Guardar cambios</button>
         <a class="btn-secondary" href="/familia/integrantes">Cancelar</a>
