@@ -294,9 +294,32 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const insertChore = async (input: {
+    titulo: string;
+    asignadoA?: string;
+    fechaLimite?: string;
+    tipo?: "diaria" | "puntual";
+    categoria?: "tarea" | "ejercicio";
+  }): Promise<{ error: string } | { ok: true; id: string }> => {
+    let assignedId: string | null = null;
+    if (input.asignadoA) {
+      const member = await findMemberByName(d, input.asignadoA);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${input.asignadoA}.` };
+      assignedId = member.id;
+    }
+    const now = Date.now();
+    const id = newId();
+    await d.run(
+      `INSERT INTO household_chores (id, title, assigned_to, status, due_date, kind, category, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+      [id, input.titulo, assignedId, input.fechaLimite ?? null, input.tipo ?? "puntual", input.categoria ?? "tarea", now, now],
+    );
+    return { ok: true, id };
+  };
+
   const registrarTareaCasa = tool({
     description:
-      "Registra una tarea de la casa o una rutina de ejercicio, opcionalmente asignada a un integrante. 'diaria' vuelve a aparecer pendiente cada día aunque se haya marcado hecha; 'puntual' es de una sola vez.",
+      "Registra UNA tarea de la casa o rutina de ejercicio, opcionalmente asignada a un integrante. 'diaria' vuelve a aparecer pendiente cada día aunque se haya marcado hecha; 'puntual' es de una sola vez. Para VARIAS de una vez (ej. un plan de ejercicio semanal) usa registrarVariasTareas — evita cortar el turno a mitad de camino.",
     inputSchema: z.object({
       titulo: z.string(),
       asignadoA: z.string().optional().describe("Nombre del integrante responsable"),
@@ -304,21 +327,39 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       tipo: z.enum(["diaria", "puntual"]).optional().default("puntual"),
       categoria: z.enum(["tarea", "ejercicio"]).optional().default("tarea"),
     }),
-    execute: async ({ titulo, asignadoA, fechaLimite, tipo, categoria }) => {
-      let assignedId: string | null = null;
-      if (asignadoA) {
-        const member = await findMemberByName(d, asignadoA);
-        if (!member) return { error: `No encontré a ningún integrante llamado ${asignadoA}.` };
-        assignedId = member.id;
+    execute: async (input) => {
+      const result = await insertChore(input);
+      if ("error" in result) return result;
+      return { ok: true, id: result.id, mensaje: `${input.categoria === "ejercicio" ? "Rutina" : "Tarea"} "${input.titulo}" registrada (${input.tipo ?? "puntual"}).` };
+    },
+  });
+
+  const registrarVariasTareas = tool({
+    description:
+      "Registra VARIAS tareas o sesiones de ejercicio de una vez EN UNA SOLA LLAMADA (ej. las 5 sesiones de un plan semanal) — úsala siempre que vayas a crear más de una, en vez de llamar registrarTareaCasa varias veces seguidas.",
+    inputSchema: z.object({
+      tareas: z
+        .array(
+          z.object({
+            titulo: z.string(),
+            asignadoA: z.string().optional(),
+            fechaLimite: z.string().optional().describe("YYYY-MM-DD"),
+            tipo: z.enum(["diaria", "puntual"]).optional().default("puntual"),
+            categoria: z.enum(["tarea", "ejercicio"]).optional().default("tarea"),
+          }),
+        )
+        .min(1)
+        .max(30),
+    }),
+    execute: async ({ tareas }) => {
+      let ok = 0;
+      const errores: string[] = [];
+      for (const t of tareas) {
+        const result = await insertChore(t);
+        if ("error" in result) errores.push(result.error);
+        else ok++;
       }
-      const now = Date.now();
-      const id = newId();
-      await d.run(
-        `INSERT INTO household_chores (id, title, assigned_to, status, due_date, kind, category, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
-        [id, titulo, assignedId, fechaLimite ?? null, tipo, categoria, now, now],
-      );
-      return { ok: true, id, mensaje: `${categoria === "ejercicio" ? "Rutina" : "Tarea"} "${titulo}" registrada (${tipo}).` };
+      return { ok: true, mensaje: `${ok} de ${tareas.length} registradas.`, errores: errores.length ? errores : undefined };
     },
   });
 
@@ -436,9 +477,56 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  interface MealDayInput {
+    fecha?: string;
+    desayuno?: string;
+    desayunoReceta?: string;
+    comida?: string;
+    comidaReceta?: string;
+    cena?: string;
+    cenaReceta?: string;
+    notas?: string;
+  }
+
+  const upsertMealDay = async ({ fecha, desayuno, desayunoReceta, comida, comidaReceta, cena, cenaReceta, notas }: MealDayInput): Promise<string> => {
+    const date = fecha ?? todayInTZ(ctx.env);
+    const existing = await d.first<{ date: string }>("SELECT date FROM meal_plan WHERE date = ?", [date]);
+    const now = Date.now();
+    const map: Record<string, unknown> = {
+      breakfast: desayuno,
+      breakfast_recipe: desayunoReceta,
+      lunch: comida,
+      lunch_recipe: comidaReceta,
+      dinner: cena,
+      dinner_recipe: cenaReceta,
+      notes: notas,
+    };
+    if (existing) {
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      for (const [col, val] of Object.entries(map)) {
+        if (val !== undefined) {
+          sets.push(`${col} = ?`);
+          params.push(val);
+        }
+      }
+      if (sets.length) {
+        sets.push("updated_at = ?");
+        params.push(now, date);
+        await d.run(`UPDATE meal_plan SET ${sets.join(", ")} WHERE date = ?`, params);
+      }
+    } else {
+      await d.run(
+        `INSERT INTO meal_plan (date, breakfast, breakfast_recipe, lunch, lunch_recipe, dinner, dinner_recipe, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [date, desayuno ?? null, desayunoReceta ?? null, comida ?? null, comidaReceta ?? null, cena ?? null, cenaReceta ?? null, notas ?? null, now, now],
+      );
+    }
+    return date;
+  };
+
   const definirMenuDia = tool({
-    description:
-      "Define o actualiza el menú de un día (desayuno/comida/cena), con ingredientes exactos y receta paso a paso opcionales para cada uno. Si no se da la fecha, es la de hoy. Para armar un menú semanal, llama esta tool una vez por cada uno de los 7 días.",
+    description: "Define o actualiza el menú de UN SOLO día (desayuno/comida/cena), con ingredientes y receta opcionales. Si no se da la fecha, es la de hoy. Para el menú de la SEMANA completa usa definirMenuSemanal en vez de llamar esta 7 veces — ahorra muchas vueltas y evita que el turno se corte.",
     inputSchema: z.object({
       fecha: z.string().optional().describe("YYYY-MM-DD, por default hoy"),
       desayuno: z.string().optional().describe("Nombre corto del plato"),
@@ -449,41 +537,35 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       cenaReceta: z.string().optional().describe("Ingredientes exactos + receta paso a paso de la cena"),
       notas: z.string().optional(),
     }),
-    execute: async ({ fecha, desayuno, desayunoReceta, comida, comidaReceta, cena, cenaReceta, notas }) => {
-      const date = fecha ?? todayInTZ(ctx.env);
-      const existing = await d.first<{ date: string }>("SELECT date FROM meal_plan WHERE date = ?", [date]);
-      const now = Date.now();
-      const map: Record<string, unknown> = {
-        breakfast: desayuno,
-        breakfast_recipe: desayunoReceta,
-        lunch: comida,
-        lunch_recipe: comidaReceta,
-        dinner: cena,
-        dinner_recipe: cenaReceta,
-        notes: notas,
-      };
-      if (existing) {
-        const sets: string[] = [];
-        const params: unknown[] = [];
-        for (const [col, val] of Object.entries(map)) {
-          if (val !== undefined) {
-            sets.push(`${col} = ?`);
-            params.push(val);
-          }
-        }
-        if (sets.length) {
-          sets.push("updated_at = ?");
-          params.push(now, date);
-          await d.run(`UPDATE meal_plan SET ${sets.join(", ")} WHERE date = ?`, params);
-        }
-      } else {
-        await d.run(
-          `INSERT INTO meal_plan (date, breakfast, breakfast_recipe, lunch, lunch_recipe, dinner, dinner_recipe, notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [date, desayuno ?? null, desayunoReceta ?? null, comida ?? null, comidaReceta ?? null, cena ?? null, cenaReceta ?? null, notas ?? null, now, now],
-        );
-      }
+    execute: async (input) => {
+      const date = await upsertMealDay(input);
       return { ok: true, mensaje: `Menú del ${date} guardado.` };
+    },
+  });
+
+  const definirMenuSemanal = tool({
+    description:
+      "Guarda el menú de VARIOS días (ej. la semana completa) EN UNA SOLA LLAMADA — úsala siempre que armes más de un día de menú, en vez de llamar definirMenuDia repetidas veces (eso puede cortar la respuesta a mitad de camino). Escribe primero todos los platos y recetas, y mándalos todos juntos aquí.",
+    inputSchema: z.object({
+      dias: z
+        .array(
+          z.object({
+            fecha: z.string().describe("YYYY-MM-DD"),
+            desayuno: z.string().optional(),
+            desayunoReceta: z.string().optional(),
+            comida: z.string().optional(),
+            comidaReceta: z.string().optional(),
+            cena: z.string().optional(),
+            cenaReceta: z.string().optional(),
+          }),
+        )
+        .min(1)
+        .max(14),
+    }),
+    execute: async ({ dias }) => {
+      const fechas: string[] = [];
+      for (const dia of dias) fechas.push(await upsertMealDay(dia));
+      return { ok: true, mensaje: `Menú guardado para ${fechas.length} día(s): ${fechas.join(", ")}.` };
     },
   });
 
@@ -954,6 +1036,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     consultarIntegrante,
     listarFamilia,
     registrarTareaCasa,
+    registrarVariasTareas,
     listarTareasCasa,
     completarTareaCasa,
     crearRecordatorio,
@@ -963,6 +1046,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     listarListaCompra,
     marcarProductoComprado,
     definirMenuDia,
+    definirMenuSemanal,
     consultarMenuDia,
     consultarPerfilNutricionalFamilia,
     consultarPerfilFisicoFamilia,
