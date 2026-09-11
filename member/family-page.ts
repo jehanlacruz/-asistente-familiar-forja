@@ -22,6 +22,8 @@ import {
   formatDateTimeInTZ,
   fundBalance,
   allocateIncomeToFunds,
+  INVITE_TTL_MS,
+  MAX_FULL_ACCESS,
   type FamilyMember,
   type Chore,
   type Reminder,
@@ -156,11 +158,17 @@ export async function addShoppingItemFromForm(env: Env, form: Record<string, str
   );
 }
 
-export async function addMemberFromForm(env: Env, form: Record<string, string>): Promise<void> {
+export async function addMemberFromForm(env: Env, form: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
   const nombre = (form.nombre || "").trim();
-  if (!nombre) return;
+  if (!nombre) return { ok: false, error: "Falta el nombre." };
   const d = db(env);
   const now = Date.now();
+  if (form.acceso === "full") {
+    const fullCount = await d.first<{ n: number }>("SELECT COUNT(*) as n FROM family_members WHERE access_level = 'full'");
+    if ((fullCount?.n ?? 0) >= MAX_FULL_ACCESS) {
+      return { ok: false, error: `Ya hay ${MAX_FULL_ACCESS} integrantes con acceso completo — es el máximo por hogar. Registra a ${nombre} sin acceso completo, o quita el acceso a otro integrante primero.` };
+    }
+  }
   await d.run(
     `INSERT INTO family_members
       (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, created_at, updated_at)
@@ -186,10 +194,20 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
       now,
     ],
   );
+  return { ok: true };
 }
 
-export async function updateMemberFromForm(env: Env, id: string, form: Record<string, string>): Promise<void> {
+export async function updateMemberFromForm(env: Env, id: string, form: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
   const d = db(env);
+  if (form.acceso === "full") {
+    const current = await d.first<{ access_level: string }>("SELECT access_level FROM family_members WHERE id = ?", [id]);
+    if (current?.access_level !== "full") {
+      const fullCount = await d.first<{ n: number }>("SELECT COUNT(*) as n FROM family_members WHERE access_level = 'full'");
+      if ((fullCount?.n ?? 0) >= MAX_FULL_ACCESS) {
+        return { ok: false, error: `Ya hay ${MAX_FULL_ACCESS} integrantes con acceso completo — es el máximo por hogar.` };
+      }
+    }
+  }
   await d.run(
     `UPDATE family_members SET
       name = ?, role = ?, access_level = ?, birthdate = ?, weight_kg = ?, height_cm = ?,
@@ -216,6 +234,7 @@ export async function updateMemberFromForm(env: Env, id: string, form: Record<st
       id,
     ],
   );
+  return { ok: true };
 }
 
 export async function addActivityFromForm(env: Env, form: Record<string, string>): Promise<void> {
@@ -311,6 +330,16 @@ export async function deleteMember(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM family_members WHERE id = ?", [id]);
 }
 
+/** Cierra sesiones web y desvincula Telegram de un integrante, sin borrar su perfil. */
+export async function revokeMemberAccess(env: Env, id: string): Promise<void> {
+  const d = db(env);
+  const now = Date.now();
+  await d.run("UPDATE family_members SET telegram_chat_id = NULL, updated_at = ? WHERE id = ?", [now, id]);
+  await d.run("DELETE FROM family_web_sessions WHERE member_id = ?", [id]);
+  await d.run("UPDATE family_invites SET revoked_at = ? WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL", [now, id]);
+  await d.run("UPDATE family_web_invites SET revoked_at = ? WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL", [now, id]);
+}
+
 // ── Login individual de la web (family_web_invites → family_web_sessions) ──
 
 export async function createWebInvite(
@@ -323,18 +352,20 @@ export async function createWebInvite(
   if (member.access_level !== "full")
     return { ok: false, error: `${member.name} no tiene acceso completo — no necesita su propia sesión web.` };
   const token = newId().replace(/-/g, "") + newId().replace(/-/g, "");
-  await d.run("INSERT INTO family_web_invites (token, member_id, created_at) VALUES (?, ?, ?)", [token, memberId, Date.now()]);
+  const now = Date.now();
+  await d.run("INSERT INTO family_web_invites (token, member_id, created_at, expires_at) VALUES (?, ?, ?, ?)", [token, memberId, now, now + INVITE_TTL_MS]);
   return { ok: true, token, memberName: member.name };
 }
 
 /** Consume el enlace de invitación (un solo uso) y devuelve el token de sesión nuevo, o null si ya no es válido. */
 export async function consumeWebInvite(env: Env, inviteToken: string): Promise<string | null> {
   const d = db(env);
-  const invite = await d.first<{ member_id: string; used_at: number | null }>(
-    "SELECT member_id, used_at FROM family_web_invites WHERE token = ?",
+  const invite = await d.first<{ member_id: string; used_at: number | null; expires_at: number | null; revoked_at: number | null }>(
+    "SELECT member_id, used_at, expires_at, revoked_at FROM family_web_invites WHERE token = ?",
     [inviteToken],
   );
-  if (!invite || invite.used_at) return null;
+  if (!invite || invite.used_at || invite.revoked_at) return null;
+  if (invite.expires_at && invite.expires_at < Date.now()) return null;
   const sessionToken = newId().replace(/-/g, "") + newId().replace(/-/g, "");
   await d.run("INSERT INTO family_web_sessions (token, member_id, created_at) VALUES (?, ?, ?)", [sessionToken, invite.member_id, Date.now()]);
   await d.run("UPDATE family_web_invites SET used_at = ? WHERE token = ?", [Date.now(), inviteToken]);
@@ -1057,6 +1088,9 @@ export async function renderEditMemberPage(env: Env, id: string): Promise<string
         <a class="btn-secondary" href="/familia/integrantes">Cancelar</a>
       </div>
     </form>
+    ${m.access_level === "full" ? `<form method="post" action="/familia/integrante/${m.id}/revocar" class="danger-form" onsubmit="return confirm('¿Cerrar la sesión web y desconectar el Telegram de ${esc(m.name)}? Sigue registrado, puede volver a conectarse con un enlace nuevo.');">
+      <button type="submit" class="link-btn">🔒 Revocar accesos activos (Telegram + sesiones web)</button>
+    </form>` : ""}
     <form method="post" action="/familia/integrante/${m.id}/borrar" class="danger-form" onsubmit="return confirm('¿Borrar a ${esc(m.name)} de la familia? No se puede deshacer.');">
       <button type="submit" class="danger">🗑 Borrar a ${esc(m.name)}</button>
     </form>

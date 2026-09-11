@@ -22,6 +22,8 @@ import {
   sendTelegramMessage,
   fundBalance,
   allocateIncomeToFunds,
+  INVITE_TTL_MS,
+  MAX_FULL_ACCESS,
   type FamilyMember,
   type Chore,
   type Reminder,
@@ -109,6 +111,13 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         if (!check.ok) return { error: check.error };
       }
 
+      if (input.accesoCompleto) {
+        const fullCount = await d.first<{ n: number }>("SELECT COUNT(*) as n FROM family_members WHERE access_level = 'full'");
+        if ((fullCount?.n ?? 0) >= MAX_FULL_ACCESS) {
+          return { error: `Ya hay ${MAX_FULL_ACCESS} integrantes con acceso completo — es el máximo por hogar. Puedes registrar a ${input.nombre} con accesoCompleto=false (perfil gestionado) en su lugar.` };
+        }
+      }
+
       const existing = await findMemberByName(d, input.nombre);
       if (existing)
         return {
@@ -181,15 +190,16 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       if (!username) return { error: "No pude obtener el username del bot en Telegram." };
 
       const token = newId().replace(/-/g, "").slice(0, 24);
+      const now = Date.now();
       await d.run(
-        `INSERT INTO family_invites (token, member_id, created_by, created_at) VALUES (?, ?, ?, ?)`,
-        [token, member.id, check.member.id, Date.now()],
+        `INSERT INTO family_invites (token, member_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+        [token, member.id, check.member.id, now, now + INVITE_TTL_MS],
       );
 
       return {
         ok: true,
         enlace: `https://t.me/${username}?start=${token}`,
-        mensaje: `Mándale este enlace a ${nombre} por su cuenta — al abrirlo en Telegram y tocar "Iniciar", queda conectado automáticamente.`,
+        mensaje: `Mándale este enlace a ${nombre} por su cuenta — vale por 7 días. Al abrirlo en Telegram y tocar "Iniciar", queda conectado automáticamente.`,
       };
     },
   });
@@ -926,17 +936,40 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const revocarAcceso = tool({
+    description:
+      "Revoca los accesos activos de un integrante: cierra todas sus sesiones web y desvincula su Telegram (también cancela cualquier enlace de invitación suyo sin usar). No borra su perfil ni sus datos — puede volver a conectarse si le generas un enlace nuevo. Úsalo cuando digan 'quítale el acceso a X' o 'cierra la sesión de X en todos lados'.",
+    inputSchema: z.object({ nombre: z.string() }),
+    execute: async ({ nombre }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+
+      const now = Date.now();
+      await d.run("UPDATE family_members SET telegram_chat_id = NULL, updated_at = ? WHERE id = ?", [now, member.id]);
+      await d.run("DELETE FROM family_web_sessions WHERE member_id = ?", [member.id]);
+      await d.run("UPDATE family_invites SET revoked_at = ? WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL", [now, member.id]);
+      await d.run("UPDATE family_web_invites SET revoked_at = ? WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL", [now, member.id]);
+
+      return { ok: true, mensaje: `Accesos de ${nombre} revocados: se desconectó su Telegram y se cerraron sus sesiones web. Sigue registrado — puedes generarle un enlace nuevo cuando quieran reconectarlo.` };
+    },
+  });
+
   const unirseConEnlace = tool({
     description:
       "Conecta a quien escribe con su perfil de familia usando el código de un enlace de invitación (mensajes que empiezan con '/start '). Llama esta tool SIEMPRE que el mensaje sea justo eso, antes de responder cualquier otra cosa.",
     inputSchema: z.object({ token: z.string().describe("El código después de '/start '") }),
     execute: async ({ token }) => {
-      const invite = await d.first<{ token: string; member_id: string; used_at: number | null }>(
+      const invite = await d.first<{ token: string; member_id: string; used_at: number | null; expires_at: number | null; revoked_at: number | null }>(
         "SELECT * FROM family_invites WHERE token = ?",
         [token],
       );
       if (!invite) return { error: "Ese enlace no es válido. Pide uno nuevo a quien te lo mandó." };
       if (invite.used_at) return { error: "Ese enlace ya se usó. Pide uno nuevo." };
+      if (invite.revoked_at) return { error: "Ese enlace fue cancelado. Pide uno nuevo." };
+      if (invite.expires_at && invite.expires_at < Date.now()) return { error: "Ese enlace ya caducó. Pide uno nuevo." };
 
       const chatId = await getSenderChannelUserId(d, ctx.getConversationId());
       if (!chatId) return { error: "No pude identificar tu chat." };
@@ -1032,6 +1065,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     registrarIntegranteFamilia,
     generarEnlaceInvitacion,
     generarEnlaceAccesoWeb,
+    revocarAcceso,
     actualizarDatosIntegrante,
     consultarIntegrante,
     listarFamilia,

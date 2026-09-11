@@ -59,6 +59,7 @@ import {
   addMemberFromForm,
   updateMemberFromForm,
   deleteMember,
+  revokeMemberAccess,
   saveTodayMenuFromForm,
   createWebInvite,
   consumeWebInvite,
@@ -762,15 +763,21 @@ app.post("/familia/menu", async (c) => {
 });
 app.get("/familia/integrante/:id/editar", async (c) => c.html(await renderEditMemberPage(c.env, c.req.param("id"))));
 app.post("/familia/integrante", async (c) => {
-  await addMemberFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  const result = await addMemberFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/integrantes">Volver</a>`, 400);
   return c.redirect("/familia/integrantes");
 });
 app.post("/familia/integrante/:id", async (c) => {
-  await updateMemberFromForm(c.env, c.req.param("id"), Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  const result = await updateMemberFromForm(c.env, c.req.param("id"), Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/integrantes">Volver</a>`, 400);
   return c.redirect("/familia/integrantes");
 });
 app.post("/familia/integrante/:id/borrar", async (c) => {
   await deleteMember(c.env, c.req.param("id"));
+  return c.redirect("/familia/integrantes");
+});
+app.post("/familia/integrante/:id/revocar", async (c) => {
+  await revokeMemberAccess(c.env, c.req.param("id"));
   return c.redirect("/familia/integrantes");
 });
 

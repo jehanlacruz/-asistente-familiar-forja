@@ -312,4 +312,8 @@ export async function allocateIncomeToFunds(
   return breakdown;
 }
 
+/** Caducidad de enlaces de invitación (Telegram y web) y cupo de accesos completos por hogar. */
+export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const MAX_FULL_ACCESS = 5;
+
 export const db = (env: Env) => new Db(env.DB);

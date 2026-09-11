@@ -361,6 +361,8 @@ CREATE TABLE IF NOT EXISTS family_web_invites (
   token TEXT PRIMARY KEY,
   member_id TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  revoked_at INTEGER,
   used_at INTEGER,
   FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE
 );
@@ -378,6 +380,8 @@ CREATE TABLE IF NOT EXISTS family_invites (
   member_id TEXT NOT NULL,
   created_by TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  revoked_at INTEGER,
   used_at INTEGER,
   FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE
 );
