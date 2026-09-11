@@ -21,6 +21,8 @@ import {
   zonedDateTimeToUtcMs,
   formatDateTimeInTZ,
   fundBalance,
+  isAdminViewer,
+  canSeeHealthOf,
   allocateIncomeToFunds,
   INVITE_TTL_MS,
   MAX_FULL_ACCESS,
@@ -158,12 +160,18 @@ export async function addShoppingItemFromForm(env: Env, form: Record<string, str
   );
 }
 
-export async function addMemberFromForm(env: Env, form: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function addMemberFromForm(
+  env: Env,
+  form: Record<string, string>,
+  viewer: FamilyMember | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const nombre = (form.nombre || "").trim();
   if (!nombre) return { ok: false, error: "Falta el nombre." };
   const d = db(env);
   const now = Date.now();
-  if (form.acceso === "full") {
+  const wantsFull = form.acceso === "full";
+  if (wantsFull) {
+    if (!isAdminViewer(viewer)) return { ok: false, error: "Solo un administrador del hogar puede dar de alta acceso completo." };
     const fullCount = await d.first<{ n: number }>("SELECT COUNT(*) as n FROM family_members WHERE access_level = 'full'");
     if ((fullCount?.n ?? 0) >= MAX_FULL_ACCESS) {
       return { ok: false, error: `Ya hay ${MAX_FULL_ACCESS} integrantes con acceso completo — es el máximo por hogar. Registra a ${nombre} sin acceso completo, o quita el acceso a otro integrante primero.` };
@@ -171,13 +179,14 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
   }
   await d.run(
     `INSERT INTO family_members
-      (id, name, role, access_level, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, name, role, access_level, permission_tier, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newId(),
       nombre,
       form.rol || "",
-      form.acceso === "full" ? "full" : "managed",
+      wantsFull ? "full" : "managed",
+      wantsFull ? "adult" : null,
       form.fechaNacimiento || null,
       form.pesoKg ? Number(form.pesoKg) : null,
       form.estaturaCm ? Number(form.estaturaCm) : null,
@@ -197,27 +206,50 @@ export async function addMemberFromForm(env: Env, form: Record<string, string>):
   return { ok: true };
 }
 
-export async function updateMemberFromForm(env: Env, id: string, form: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function updateMemberFromForm(
+  env: Env,
+  id: string,
+  form: Record<string, string>,
+  viewer: FamilyMember | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const d = db(env);
-  if (form.acceso === "full") {
-    const current = await d.first<{ access_level: string }>("SELECT access_level FROM family_members WHERE id = ?", [id]);
-    if (current?.access_level !== "full") {
-      const fullCount = await d.first<{ n: number }>("SELECT COUNT(*) as n FROM family_members WHERE access_level = 'full'");
-      if ((fullCount?.n ?? 0) >= MAX_FULL_ACCESS) {
-        return { ok: false, error: `Ya hay ${MAX_FULL_ACCESS} integrantes con acceso completo — es el máximo por hogar.` };
-      }
+  const current = await d.first<FamilyMember>("SELECT * FROM family_members WHERE id = ?", [id]);
+  if (!current) return { ok: false, error: "No encontré a ese integrante." };
+
+  const wantsFull = form.acceso === "full";
+  const admin = isAdminViewer(viewer);
+
+  if (wantsFull && current.access_level !== "full") {
+    if (!admin) return { ok: false, error: "Solo un administrador del hogar puede dar acceso completo." };
+    const fullCount = await d.first<{ n: number }>("SELECT COUNT(*) as n FROM family_members WHERE access_level = 'full'");
+    if ((fullCount?.n ?? 0) >= MAX_FULL_ACCESS) {
+      return { ok: false, error: `Ya hay ${MAX_FULL_ACCESS} integrantes con acceso completo — es el máximo por hogar.` };
     }
   }
+
+  let permissionTier: string | null = wantsFull ? (current.permission_tier ?? "adult") : null;
+  if (wantsFull && form.nivelPermiso && form.nivelPermiso !== current.permission_tier) {
+    if (!admin) return { ok: false, error: "Solo un administrador del hogar puede cambiar el nivel de permiso." };
+    permissionTier = form.nivelPermiso === "admin" ? "admin" : "adult";
+  }
+
+  const healthPrivate = form.datosSaludPrivados === "1" ? 1 : 0;
+  if (healthPrivate !== current.health_private && !admin && viewer?.id !== id) {
+    return { ok: false, error: "Solo esta persona o un administrador pueden cambiar la privacidad de sus datos de salud." };
+  }
+
   await d.run(
     `UPDATE family_members SET
-      name = ?, role = ?, access_level = ?, birthdate = ?, weight_kg = ?, height_cm = ?,
+      name = ?, role = ?, access_level = ?, permission_tier = ?, health_private = ?, birthdate = ?, weight_kg = ?, height_cm = ?,
       clothing_size = ?, nationality = ?, food_preferences = ?, allergies = ?, nutrition_goal = ?,
       fitness_level = ?, time_available = ?, injuries = ?, interests = ?, updated_at = ?
      WHERE id = ?`,
     [
       (form.nombre || "").trim(),
       form.rol || "",
-      form.acceso === "full" ? "full" : "managed",
+      wantsFull ? "full" : "managed",
+      permissionTier,
+      healthPrivate,
       form.fechaNacimiento || null,
       form.pesoKg ? Number(form.pesoKg) : null,
       form.estaturaCm ? Number(form.estaturaCm) : null,
@@ -265,7 +297,11 @@ export async function deleteActivity(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM family_activities WHERE id = ?", [id]);
 }
 
-export async function addTransactionFromForm(env: Env, form: Record<string, string>): Promise<{ reparto?: { fondo: string; monto: number }[] }> {
+export async function addTransactionFromForm(
+  env: Env,
+  form: Record<string, string>,
+  viewer: FamilyMember | null,
+): Promise<{ reparto?: { fondo: string; monto: number }[] }> {
   const categoria = (form.categoria || "").trim();
   const monto = Number(form.monto);
   if (!categoria || !monto) return {};
@@ -274,6 +310,7 @@ export async function addTransactionFromForm(env: Env, form: Record<string, stri
   const date = form.fecha || todayInTZ(env);
   const tipo = form.tipo === "ingreso" ? "ingreso" : "gasto";
   const txId = newId();
+  const visibility = form.privado === "1" ? "privado" : "compartido";
 
   let fundId: string | null = null;
   if (tipo === "gasto") {
@@ -283,17 +320,24 @@ export async function addTransactionFromForm(env: Env, form: Record<string, stri
   }
 
   await d.run(
-    `INSERT INTO transactions (id, type, amount, category, description, member_id, fund_id, date, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
-    [txId, tipo, monto, categoria, form.descripcion || null, fundId, date, now, now],
+    `INSERT INTO transactions (id, type, amount, category, description, member_id, fund_id, visibility, date, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [txId, tipo, monto, categoria, form.descripcion || null, viewer?.id ?? null, fundId, visibility, date, now, now],
   );
 
   if (tipo === "ingreso") return { reparto: await allocateIncomeToFunds(d, txId, monto, date) };
   return {};
 }
 
-export async function deleteTransaction(env: Env, id: string): Promise<void> {
-  await db(env).run("DELETE FROM transactions WHERE id = ?", [id]);
+export async function deleteTransaction(env: Env, id: string, viewer: FamilyMember | null): Promise<{ ok: true } | { ok: false; error: string }> {
+  const d = db(env);
+  const tx = await d.first<{ visibility: string; member_id: string | null }>("SELECT visibility, member_id FROM transactions WHERE id = ?", [id]);
+  if (!tx) return { ok: true }; // ya no existe, nada que hacer
+  if (tx.visibility === "privado" && !isAdminViewer(viewer) && tx.member_id !== viewer?.id) {
+    return { ok: false, error: "Es una transacción privada de otra persona." };
+  }
+  await d.run("DELETE FROM transactions WHERE id = ?", [id]);
+  return { ok: true };
 }
 
 export async function setBudgetFromForm(env: Env, form: Record<string, string>): Promise<void> {
@@ -516,35 +560,38 @@ function fitnessOptions(selected: string | null | undefined): string {
   return opts.map(([v, label]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${esc(label)}</option>`).join("");
 }
 
-function memberCard(m: FamilyMember): string {
+function memberCard(m: FamilyMember, viewer: FamilyMember | null): string {
+  const canSeeHealth = canSeeHealthOf(m, viewer);
   const edad = ageFromBirthdate(m.birthdate);
-  const bmi = bmiInfo(m.weight_kg, m.height_cm);
+  const bmi = canSeeHealth ? bmiInfo(m.weight_kg, m.height_cm) : null;
   const rows: string[] = [];
   if (edad != null) rows.push(`<div class="row"><span>Edad</span><b>${edad} años</b></div>`);
-  if (m.weight_kg) rows.push(`<div class="row"><span>Peso</span><b>${m.weight_kg} kg</b></div>`);
-  if (m.height_cm) rows.push(`<div class="row"><span>Estatura</span><b>${m.height_cm} cm</b></div>`);
+  if (canSeeHealth && m.weight_kg) rows.push(`<div class="row"><span>Peso</span><b>${m.weight_kg} kg</b></div>`);
+  if (canSeeHealth && m.height_cm) rows.push(`<div class="row"><span>Estatura</span><b>${m.height_cm} cm</b></div>`);
   if (bmi) rows.push(`<div class="row"><span>IMC</span><b>${bmi.bmi} · ${esc(bmi.category)}</b></div>`);
   if (m.clothing_size) rows.push(`<div class="row"><span>Talla</span><b>${esc(m.clothing_size)}</b></div>`);
   if (m.nationality) rows.push(`<div class="row"><span>Nacionalidad</span><b>${esc(m.nationality)}</b></div>`);
   if (m.food_preferences) rows.push(`<div class="row"><span>Le gusta</span><b>${esc(m.food_preferences)}</b></div>`);
-  if (m.allergies) rows.push(`<div class="row"><span>Alergias</span><b>${esc(m.allergies)}</b></div>`);
-  if (m.nutrition_goal) rows.push(`<div class="row"><span>Objetivo</span><b>${esc(GOAL_LABEL[m.nutrition_goal] ?? m.nutrition_goal)}</b></div>`);
-  if (m.fitness_level) rows.push(`<div class="row"><span>Nivel físico</span><b>${esc(FITNESS_LABEL[m.fitness_level] ?? m.fitness_level)}</b></div>`);
-  if (m.injuries) rows.push(`<div class="row"><span>Lesiones</span><b>${esc(m.injuries)}</b></div>`);
+  if (canSeeHealth && m.allergies) rows.push(`<div class="row"><span>Alergias</span><b>${esc(m.allergies)}</b></div>`);
+  if (canSeeHealth && m.nutrition_goal) rows.push(`<div class="row"><span>Objetivo</span><b>${esc(GOAL_LABEL[m.nutrition_goal] ?? m.nutrition_goal)}</b></div>`);
+  if (canSeeHealth && m.fitness_level) rows.push(`<div class="row"><span>Nivel físico</span><b>${esc(FITNESS_LABEL[m.fitness_level] ?? m.fitness_level)}</b></div>`);
+  if (canSeeHealth && m.injuries) rows.push(`<div class="row"><span>Lesiones</span><b>${esc(m.injuries)}</b></div>`);
   if (m.interests) rows.push(`<div class="row"><span>Intereses</span><b>${esc(m.interests)}</b></div>`);
+  if (!canSeeHealth) rows.push(`<div class="empty">🔒 Mantiene sus datos de salud en privado</div>`);
   const badge =
     m.access_level === "full"
       ? m.telegram_chat_id
         ? `<span class="badge ok">conectado</span>`
         : `<span class="badge pending">sin conectar</span>`
       : `<span class="badge managed">perfil gestionado</span>`;
+  const isAdmin = isAdminViewer(viewer);
   return `<div class="card">
     <div class="card-head"><h3>${esc(m.name)}</h3>${badge}</div>
-    <div class="role">${esc(m.role)}</div>
+    <div class="role">${esc(m.role)}${m.permission_tier === "admin" ? ` · <span class="meta">admin</span>` : ""}</div>
     ${rows.join("") || `<div class="empty">Sin datos todavía</div>`}
     <div class="card-actions">
       <a class="edit-link" href="/familia/integrante/${m.id}/editar">✏️ Editar</a>
-      ${m.access_level === "full" ? `<form method="post" action="/familia/integrante/${m.id}/generar-acceso-web"><button type="submit" class="link-btn">🔗 Enlace de acceso web</button></form>` : ""}
+      ${isAdmin && m.access_level === "full" ? `<form method="post" action="/familia/integrante/${m.id}/generar-acceso-web"><button type="submit" class="link-btn">🔗 Enlace de acceso web</button></form>` : ""}
     </div>
   </div>`;
 }
@@ -659,9 +706,9 @@ export async function renderHome(env: Env): Promise<string> {
 
 // ── Página: Integrantes ─────────────────────────────────────────────────
 
-export async function renderIntegrantesPage(env: Env): Promise<string> {
+export async function renderIntegrantesPage(env: Env, viewer: FamilyMember | null): Promise<string> {
   const members = await listMembers(db(env));
-  const body = `<div class="grid">${members.map(memberCard).join("") || `<div class="card">Todavía no hay nadie registrado.</div>`}</div>
+  const body = `<div class="grid">${members.map((m) => memberCard(m, viewer)).join("") || `<div class="card">Todavía no hay nadie registrado.</div>`}</div>
     <details class="add-member"><summary>+ Agregar integrante</summary>
       <form method="post" action="/familia/integrante">
         <input type="text" name="nombre" placeholder="Nombre" required>
@@ -893,15 +940,17 @@ async function currencySymbol(env: Env): Promise<string> {
   return row?.value || "€";
 }
 
-export async function renderFinanzasPage(env: Env): Promise<string> {
+export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null): Promise<string> {
   const d = db(env);
   const cur = await currencySymbol(env);
   const month = todayInTZ(env).slice(0, 7);
+  const admin = isAdminViewer(viewer);
 
-  const rows = await d.all<Transaction>(
+  const allRows = await d.all<Transaction>(
     "SELECT * FROM transactions WHERE substr(date, 1, 7) = ? ORDER BY date DESC, created_at DESC",
     [month],
   );
+  const rows = allRows.filter((r) => r.visibility !== "privado" || admin || r.member_id === viewer?.id);
   const totalIngresos = rows.filter((r) => r.type === "ingreso").reduce((s, r) => s + r.amount, 0);
   const totalGastos = rows.filter((r) => r.type === "gasto").reduce((s, r) => s + r.amount, 0);
   const balance = totalIngresos - totalGastos;
@@ -925,7 +974,7 @@ export async function renderFinanzasPage(env: Env): Promise<string> {
   const nameById = new Map(memberRows.map((m) => [m.id, m.name]));
   const txRow = (t: Transaction) => `<li>
     <div class="rem-info">
-      <span class="txt">${t.type === "gasto" ? "🔻" : "🔺"} ${esc(t.description || t.category)}</span>
+      <span class="txt">${t.type === "gasto" ? "🔻" : "🔺"} ${esc(t.description || t.category)}${t.visibility === "privado" ? " 🔒" : ""}</span>
       <span class="meta">${esc(t.category)} · ${esc(t.date)}${t.member_id ? ` · ${esc(nameById.get(t.member_id) ?? "")}` : ""}</span>
     </div>
     <span class="row-right">
@@ -997,6 +1046,7 @@ export async function renderFinanzasPage(env: Env): Promise<string> {
         <input type="text" name="descripcion" placeholder="Descripción / fuente (opcional)">
         <input type="text" name="fondo" placeholder="Sobre del que sale (gastos, opcional)">
         <input type="date" name="fecha">
+        <label class="chk"><input type="checkbox" name="privado" value="1"> Privado (solo yo y los admins la vemos)</label>
         <button type="submit">+ Registrar</button>
       </form>
     </section>`;
@@ -1071,6 +1121,8 @@ export async function renderEditMemberPage(env: Env, id: string): Promise<string
       <label class="field">Nombre completo<input type="text" name="nombre" value="${esc(m.name)}" required></label>
       <label class="field">Rol<input type="text" name="rol" value="${esc(m.role)}"></label>
       <label class="chk"><input type="checkbox" name="acceso" value="full" ${m.access_level === "full" ? "checked" : ""}> Acceso completo (chatea directo con el bot)</label>
+      ${m.access_level === "full" ? `<label class="field">Nivel de permiso<select name="nivelPermiso"><option value="adult" ${m.permission_tier !== "admin" ? "selected" : ""}>Adulto (usa todo)</option><option value="admin" ${m.permission_tier === "admin" ? "selected" : ""}>Administrador (gestiona el hogar)</option></select></label>` : ""}
+      <label class="chk"><input type="checkbox" name="datosSaludPrivados" value="1" ${m.health_private ? "checked" : ""}> Mantener peso/salud/lesiones privado (solo esta persona y los admins lo ven)</label>
       <label class="field">Fecha de nacimiento<input type="date" name="fechaNacimiento" value="${m.birthdate ?? ""}"></label>
       <label class="field">Peso (kg)<input type="number" step="0.1" name="pesoKg" value="${m.weight_kg ?? ""}"></label>
       <label class="field">Estatura (cm)<input type="number" step="0.1" name="estaturaCm" value="${m.height_cm ?? ""}"></label>

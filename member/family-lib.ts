@@ -21,8 +21,21 @@ export interface FamilyMember {
   time_available: string | null;
   injuries: string | null;
   interests: string | null;
+  permission_tier: "admin" | "adult" | null;
+  health_private: number;
   created_at: number;
   updated_at: number;
+}
+
+/** null (Basic Auth con la contraseña maestra) cuenta como admin — es el rescate. */
+export function isAdminViewer(viewer: FamilyMember | null): boolean {
+  return viewer === null || viewer.permission_tier === "admin";
+}
+
+/** viewer=null vía Basic Auth se trata como admin (ver isAdminViewer); sin identificar por chat, sin privilegios. */
+export function canSeeHealthOf(m: FamilyMember, viewer: FamilyMember | null): boolean {
+  if (!m.health_private) return true;
+  return isAdminViewer(viewer) || viewer?.id === m.id;
 }
 
 export interface Transaction {
@@ -33,6 +46,7 @@ export interface Transaction {
   description: string | null;
   member_id: string | null;
   fund_id: string | null;
+  visibility: "compartido" | "privado";
   date: string;
   created_at: number;
   updated_at: number;

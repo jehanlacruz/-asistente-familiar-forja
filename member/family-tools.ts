@@ -49,26 +49,49 @@ async function requireFullAccessSender(
   return { ok: true, member };
 }
 
-function memberSummary(m: FamilyMember) {
+/** Para gestionar la ESTRUCTURA del hogar (invitar, revocar, cambiar niveles) — no basta con acceso completo, hace falta ser admin. */
+async function requireAdminSender(
+  ctx: MemberToolCtx,
+): Promise<{ ok: true; member: FamilyMember } | { ok: false; error: string }> {
+  const check = await requireFullAccessSender(ctx);
+  if (!check.ok) return check;
+  if (check.member.permission_tier !== "admin") {
+    return { ok: false, error: "Solo un administrador del hogar puede hacer esto — pídeselo a quien tenga ese nivel." };
+  }
+  return check;
+}
+
+/** viewer=null (no se pudo identificar quién pregunta) se trata como sin privilegios — más seguro que asumir acceso. */
+function canSeeHealthOf(m: FamilyMember, viewer: FamilyMember | null): boolean {
+  if (!m.health_private) return true;
+  if (!viewer) return false;
+  return viewer.id === m.id || viewer.permission_tier === "admin";
+}
+
+function memberSummary(m: FamilyMember, viewer: FamilyMember | null) {
+  const canSeeHealth = canSeeHealthOf(m, viewer);
   const edad = ageFromBirthdate(m.birthdate);
-  const bmi = bmiInfo(m.weight_kg, m.height_cm);
+  const bmi = canSeeHealth ? bmiInfo(m.weight_kg, m.height_cm) : null;
   return {
     nombre: m.name,
     rol: m.role,
     accesoCompleto: m.access_level === "full",
+    nivelPermiso: m.permission_tier,
     conectado: m.telegram_chat_id != null,
     fechaNacimiento: m.birthdate,
     edad,
-    pesoKg: m.weight_kg,
-    estaturaCm: m.height_cm,
+    pesoKg: canSeeHealth ? m.weight_kg : null,
+    estaturaCm: canSeeHealth ? m.height_cm : null,
     tallaRopa: m.clothing_size,
     nacionalidad: m.nationality,
     preferenciasComida: m.food_preferences,
-    alergias: m.allergies,
-    objetivoNutricional: m.nutrition_goal,
+    alergias: canSeeHealth ? m.allergies : null,
+    objetivoNutricional: canSeeHealth ? m.nutrition_goal : null,
     intereses: m.interests,
     imc: bmi?.bmi ?? null,
     categoriaImc: bmi?.category ?? null,
+    datosSaludPrivados: !!m.health_private,
+    ...(m.health_private && !canSeeHealth ? { nota: "Esta persona mantiene sus datos de salud en privado." } : {}),
   };
 }
 
@@ -106,8 +129,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
 
       if (total > 0) {
-        // Ya hay familia: solo un miembro de acceso completo puede registrar a otros.
-        const check = await requireFullAccessSender(ctx);
+        // Ya hay familia: agregar acceso completo es estructural (solo admin);
+        // agregar un perfil gestionado (niño) lo puede hacer cualquier adulto.
+        const check = input.accesoCompleto ? await requireAdminSender(ctx) : await requireFullAccessSender(ctx);
         if (!check.ok) return { error: check.error };
       }
 
@@ -127,13 +151,15 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       const now = Date.now();
       const id = newId();
       // Bootstrap: si es el primer integrante de la familia y accesoCompleto,
-      // lo conectamos directo con el chat_id de quien está escribiendo.
+      // lo conectamos directo con el chat_id de quien está escribiendo, y queda
+      // como admin (alguien tiene que serlo desde el día uno).
       const chatId = total === 0 && input.accesoCompleto ? senderChatId : null;
+      const permissionTier = input.accesoCompleto ? (total === 0 ? "admin" : "adult") : null;
 
       await d.run(
         `INSERT INTO family_members
-          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, permission_tier, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           input.nombre,
@@ -151,6 +177,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
           input.tiempoDisponible ?? null,
           input.lesiones ?? null,
           input.intereses ?? null,
+          permissionTier,
           now,
           now,
         ],
@@ -176,7 +203,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       nombre: z.string().describe("Nombre exacto del integrante ya registrado"),
     }),
     execute: async ({ nombre }) => {
-      const check = await requireFullAccessSender(ctx);
+      const check = await requireAdminSender(ctx);
       if (!check.ok) return { error: check.error };
 
       const member = await findMemberByName(d, nombre);
@@ -209,7 +236,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       "Genera un enlace de un solo uso para que un integrante con acceso completo entre a la página web de la familia (/familia) con su PROPIA sesión guardada en su navegador — no necesita saber ninguna contraseña. Úsalo cuando pidan 'dame acceso a la web', 'quiero mi propio usuario', etc.",
     inputSchema: z.object({ nombre: z.string().describe("Nombre exacto del integrante, con acceso completo") }),
     execute: async ({ nombre }) => {
-      const check = await requireFullAccessSender(ctx);
+      const check = await requireAdminSender(ctx);
       if (!check.ok) return { error: check.error };
 
       const member = await findMemberByName(d, nombre);
@@ -245,6 +272,11 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       tiempoDisponible: z.string().optional().describe("ej. '3 veces por semana, 30 min'"),
       lesiones: z.string().optional(),
       intereses: z.string().optional().describe("Gustos/intereses (útil sobre todo para niños)"),
+      datosSaludPrivados: z
+        .boolean()
+        .optional()
+        .describe("true = peso/estatura/IMC/alergias/objetivo/nivel físico/lesiones solo los ve esta persona y los admins"),
+      nivelPermiso: z.enum(["admin", "adult"]).optional().describe("Solo un admin puede cambiar el nivel de otro integrante"),
     }),
     execute: async ({ nombre, ...fields }) => {
       const check = await requireFullAccessSender(ctx);
@@ -252,6 +284,13 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
 
       const member = await findMemberByName(d, nombre);
       if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+
+      if (fields.nivelPermiso !== undefined && check.member.permission_tier !== "admin") {
+        return { error: "Solo un administrador del hogar puede cambiar el nivel de permiso de alguien." };
+      }
+      if (fields.datosSaludPrivados !== undefined && check.member.id !== member.id && check.member.permission_tier !== "admin") {
+        return { error: `Solo ${member.name} o un administrador pueden cambiar la privacidad de sus datos de salud.` };
+      }
 
       const sets: string[] = [];
       const params: unknown[] = [];
@@ -268,6 +307,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         time_available: fields.tiempoDisponible,
         injuries: fields.lesiones,
         interests: fields.intereses,
+        health_private: fields.datosSaludPrivados === undefined ? undefined : fields.datosSaludPrivados ? 1 : 0,
+        permission_tier: fields.nivelPermiso,
       };
       for (const [col, val] of Object.entries(map)) {
         if (val !== undefined) {
@@ -291,7 +332,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     execute: async ({ nombre }) => {
       const member = await findMemberByName(d, nombre);
       if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
-      return memberSummary(member);
+      const viewerChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const viewer = viewerChatId ? await findMemberByChatId(d, viewerChatId) : null;
+      return memberSummary(member, viewer);
     },
   });
 
@@ -300,7 +343,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     inputSchema: z.object({}),
     execute: async () => {
       const members = await listMembers(d);
-      return { integrantes: members.map(memberSummary) };
+      const viewerChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const viewer = viewerChatId ? await findMemberByChatId(d, viewerChatId) : null;
+      return { integrantes: members.map((m) => memberSummary(m, viewer)) };
     },
   });
 
@@ -770,8 +815,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       descripcion: z.string().optional().describe("Para ingresos, de dónde viene; para gastos, detalle corto"),
       fecha: z.string().optional().describe("YYYY-MM-DD, por default hoy"),
       fondo: z.string().optional().describe("Solo gastos: nombre exacto del sobre del que sale el dinero, si no coincide con la categoría"),
+      privado: z.boolean().optional().default(false).describe("true = solo quien la registra y los admins la ven (ej. un gasto personal)"),
     }),
-    execute: async ({ tipo, monto, categoria, descripcion, fecha, fondo }) => {
+    execute: async ({ tipo, monto, categoria, descripcion, fecha, fondo, privado }) => {
       const date = fecha ?? todayInTZ(ctx.env);
       const month = date.slice(0, 7);
       const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
@@ -787,9 +833,9 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       }
 
       await d.run(
-        `INSERT INTO transactions (id, type, amount, category, description, member_id, fund_id, date, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [txId, tipo, monto, categoria, descripcion ?? null, sender?.id ?? null, fundId, date, now, now],
+        `INSERT INTO transactions (id, type, amount, category, description, member_id, fund_id, visibility, date, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [txId, tipo, monto, categoria, descripcion ?? null, sender?.id ?? null, fundId, privado ? "privado" : "compartido", date, now, now],
       );
 
       if (tipo === "ingreso") {
@@ -844,10 +890,15 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     }),
     execute: async ({ mes, tipo, categoria }) => {
       const month = mes ?? todayInTZ(ctx.env).slice(0, 7);
-      const rows = await d.all<Transaction>(
+      const all = await d.all<Transaction>(
         "SELECT * FROM transactions WHERE substr(date, 1, 7) = ? ORDER BY date DESC, created_at DESC",
         [month],
       );
+      const viewerChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const viewer = viewerChatId ? await findMemberByChatId(d, viewerChatId) : null;
+      const isAdmin = viewer?.permission_tier === "admin";
+      const rows = all.filter((r) => r.visibility !== "privado" || isAdmin || r.member_id === viewer?.id);
+
       const filtered = rows.filter((r) => (!tipo || r.type === tipo) && (!categoria || r.category.toLowerCase() === categoria.toLowerCase()));
       const totalIngresos = rows.filter((r) => r.type === "ingreso").reduce((s, r) => s + r.amount, 0);
       const totalGastos = rows.filter((r) => r.type === "gasto").reduce((s, r) => s + r.amount, 0);
@@ -856,7 +907,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         totalIngresos,
         totalGastos,
         balance: totalIngresos - totalGastos,
-        transacciones: filtered.map((r) => ({ tipo: r.type, monto: r.amount, categoria: r.category, descripcion: r.description, fecha: r.date })),
+        transacciones: filtered.map((r) => ({ tipo: r.type, monto: r.amount, categoria: r.category, descripcion: r.description, fecha: r.date, privada: r.visibility === "privado" })),
       };
     },
   });
@@ -941,7 +992,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       "Revoca los accesos activos de un integrante: cierra todas sus sesiones web y desvincula su Telegram (también cancela cualquier enlace de invitación suyo sin usar). No borra su perfil ni sus datos — puede volver a conectarse si le generas un enlace nuevo. Úsalo cuando digan 'quítale el acceso a X' o 'cierra la sesión de X en todos lados'.",
     inputSchema: z.object({ nombre: z.string() }),
     execute: async ({ nombre }) => {
-      const check = await requireFullAccessSender(ctx);
+      const check = await requireAdminSender(ctx);
       if (!check.ok) return { error: check.error };
 
       const member = await findMemberByName(d, nombre);

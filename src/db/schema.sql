@@ -350,6 +350,12 @@ CREATE TABLE IF NOT EXISTS family_members (
   time_available TEXT,
   injuries TEXT,
   interests TEXT,
+  -- permission_tier solo aplica a access_level='full': 'admin' (gestiona el
+  -- hogar: invita, revoca, borra) | 'adult' (usa todo, no gestiona la estructura).
+  permission_tier TEXT,
+  -- health_private=1: peso/estatura/IMC/alergias/objetivo/nivel físico/lesiones
+  -- solo los ve esta persona y los admins — no el resto de adultos del hogar.
+  health_private INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -481,6 +487,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   description TEXT,
   member_id TEXT,
   fund_id TEXT,
+  visibility TEXT NOT NULL DEFAULT 'compartido', -- 'compartido' | 'privado' (solo quien la registró + admins)
   date TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,

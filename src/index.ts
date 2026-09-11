@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { applyLanguage } from "./idioma";
 import type { Env } from "./env";
@@ -74,6 +74,7 @@ import { applyBranding } from "./admin/branding";
 import { isOwner, handleOwnerMessage } from "./owner/handler";
 import { purgeOldMessages, purgeOldMedia, purgeOldTestChats } from "./crons/purgeOldMessages";
 import { runDueReminders } from "../member/reminders-cron";
+import { isAdminViewer, type FamilyMember } from "../member/family-lib";
 import { reindexFixtures } from "./kb/reindex";
 import { widgetJs, widgetPreflight, webPoll, webSend } from "./web/rutas";
 import { analyzeConversations } from "./insights/analyzer";
@@ -645,6 +646,10 @@ app.route("/admin", adminApp);
 // /familia/entrar/:token y los archivos de la PWA (manifest/sw/íconos) son las
 // ÚNICAS rutas libres — el navegador los pide sin sesión antes de instalar la app.
 const FAMILIA_PWA_PUBLIC = new Set(["/familia/manifest.webmanifest", "/familia/sw.js", "/familia/icon-192.png", "/familia/icon-512.png"]);
+// null = entró con la contraseña maestra del panel (Basic Auth) → se trata como admin, es el rescate.
+async function currentViewer(c: Context<{ Bindings: Env }>): Promise<FamilyMember | null> {
+  return findFamilySessionMember(c.env, getCookie(c, "family_session") ?? "");
+}
 app.use("/familia", async (c, next) => {
   if (await findFamilySessionMember(c.env, getCookie(c, "family_session") ?? "")) return next();
   return adminAuth(c.env)(c, next);
@@ -667,6 +672,7 @@ app.get("/familia/entrar/:token", async (c) => {
   return c.redirect("/familia");
 });
 app.post("/familia/integrante/:id/generar-acceso-web", async (c) => {
+  if (!isAdminViewer(await currentViewer(c))) return c.html(`<p>Solo un administrador del hogar puede generar enlaces de acceso.</p><a href="/familia/integrantes">Volver</a>`, 403);
   const result = await createWebInvite(c.env, c.req.param("id"));
   if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/integrantes">Volver</a>`, 400);
   const url = `${new URL(c.req.url).origin}/familia/entrar/${result.token}`;
@@ -685,7 +691,7 @@ app.get("/familia/sw.js", (c) => c.body(buildServiceWorker(), 200, { "Content-Ty
 app.get("/familia/icon-192.png", (c) => c.body(decodeIcon(ICON_192_BASE64), 200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=604800" }));
 app.get("/familia/icon-512.png", (c) => c.body(decodeIcon(ICON_512_BASE64), 200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=604800" }));
 app.get("/familia", async (c) => c.html(await renderHome(c.env)));
-app.get("/familia/integrantes", async (c) => c.html(await renderIntegrantesPage(c.env)));
+app.get("/familia/integrantes", async (c) => c.html(await renderIntegrantesPage(c.env, await currentViewer(c))));
 app.get("/familia/tareas", async (c) => c.html(await renderTareasPage(c.env)));
 app.get("/familia/ejercicio", async (c) => c.html(await renderEjercicioPage(c.env)));
 app.get("/familia/menu", async (c) => c.html(await renderMenuPage(c.env)));
@@ -699,13 +705,14 @@ app.post("/familia/recordatorio/:id/borrar", async (c) => {
   await cancelReminder(c.env, c.req.param("id"));
   return c.body(null, 204);
 });
-app.get("/familia/finanzas", async (c) => c.html(await renderFinanzasPage(c.env)));
+app.get("/familia/finanzas", async (c) => c.html(await renderFinanzasPage(c.env, await currentViewer(c))));
 app.post("/familia/transaccion", async (c) => {
-  await addTransactionFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  await addTransactionFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>, await currentViewer(c));
   return c.redirect("/familia/finanzas");
 });
 app.post("/familia/transaccion/:id/borrar", async (c) => {
-  await deleteTransaction(c.env, c.req.param("id"));
+  const result = await deleteTransaction(c.env, c.req.param("id"), await currentViewer(c));
+  if (!result.ok) return c.text(result.error, 403);
   return c.body(null, 204);
 });
 app.post("/familia/presupuesto", async (c) => {
@@ -763,20 +770,24 @@ app.post("/familia/menu", async (c) => {
 });
 app.get("/familia/integrante/:id/editar", async (c) => c.html(await renderEditMemberPage(c.env, c.req.param("id"))));
 app.post("/familia/integrante", async (c) => {
-  const result = await addMemberFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+  const result = await addMemberFromForm(c.env, form, await currentViewer(c));
   if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/integrantes">Volver</a>`, 400);
   return c.redirect("/familia/integrantes");
 });
 app.post("/familia/integrante/:id", async (c) => {
-  const result = await updateMemberFromForm(c.env, c.req.param("id"), Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+  const result = await updateMemberFromForm(c.env, c.req.param("id"), form, await currentViewer(c));
   if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/integrantes">Volver</a>`, 400);
   return c.redirect("/familia/integrantes");
 });
 app.post("/familia/integrante/:id/borrar", async (c) => {
+  if (!isAdminViewer(await currentViewer(c))) return c.html(`<p>Solo un administrador del hogar puede borrar integrantes.</p><a href="/familia/integrantes">Volver</a>`, 403);
   await deleteMember(c.env, c.req.param("id"));
   return c.redirect("/familia/integrantes");
 });
 app.post("/familia/integrante/:id/revocar", async (c) => {
+  if (!isAdminViewer(await currentViewer(c))) return c.html(`<p>Solo un administrador del hogar puede revocar accesos.</p><a href="/familia/integrantes">Volver</a>`, 403);
   await revokeMemberAccess(c.env, c.req.param("id"));
   return c.redirect("/familia/integrantes");
 });
