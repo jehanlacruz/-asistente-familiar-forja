@@ -26,6 +26,11 @@ import { adminApp } from "./admin/routes";
 import { adminAuth } from "./admin/auth";
 import {
   renderHome,
+  buildManifest,
+  buildServiceWorker,
+  decodeIcon,
+  ICON_192_BASE64,
+  ICON_512_BASE64,
   renderIntegrantesPage,
   renderTareasPage,
   renderEjercicioPage,
@@ -636,13 +641,15 @@ app.route("/admin", adminApp);
 // Centro Familiar (member/family-page.ts): sesión propia por integrante
 // (cookie family_session) O la contraseña maestra del panel como rescate —
 // mismo patrón que /admin (cookie de Equipo O Basic Auth siempre válido).
-// /familia/entrar/:token es la ÚNICA ruta libre (así te puedes autenticar).
+// /familia/entrar/:token y los archivos de la PWA (manifest/sw/íconos) son las
+// ÚNICAS rutas libres — el navegador los pide sin sesión antes de instalar la app.
+const FAMILIA_PWA_PUBLIC = new Set(["/familia/manifest.webmanifest", "/familia/sw.js", "/familia/icon-192.png", "/familia/icon-512.png"]);
 app.use("/familia", async (c, next) => {
   if (await findFamilySessionMember(c.env, getCookie(c, "family_session") ?? "")) return next();
   return adminAuth(c.env)(c, next);
 });
 app.use("/familia/*", async (c, next) => {
-  if (c.req.path.startsWith("/familia/entrar/")) return next();
+  if (c.req.path.startsWith("/familia/entrar/") || FAMILIA_PWA_PUBLIC.has(c.req.path)) return next();
   if (await findFamilySessionMember(c.env, getCookie(c, "family_session") ?? "")) return next();
   return adminAuth(c.env)(c, next);
 });
@@ -672,6 +679,10 @@ app.post("/familia/salir", async (c) => {
   }
   return c.redirect("/familia");
 });
+app.get("/familia/manifest.webmanifest", (c) => c.body(buildManifest(c.env), 200, { "Content-Type": "application/manifest+json" }));
+app.get("/familia/sw.js", (c) => c.body(buildServiceWorker(), 200, { "Content-Type": "application/javascript; charset=utf-8" }));
+app.get("/familia/icon-192.png", (c) => c.body(decodeIcon(ICON_192_BASE64), 200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=604800" }));
+app.get("/familia/icon-512.png", (c) => c.body(decodeIcon(ICON_512_BASE64), 200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=604800" }));
 app.get("/familia", async (c) => c.html(await renderHome(c.env)));
 app.get("/familia/integrantes", async (c) => c.html(await renderIntegrantesPage(c.env)));
 app.get("/familia/tareas", async (c) => c.html(await renderTareasPage(c.env)));

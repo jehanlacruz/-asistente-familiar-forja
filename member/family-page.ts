@@ -31,10 +31,66 @@ import {
   type FinanceFund,
 } from "./family-lib";
 import type { Env } from "../src/env";
+import { ICON_192_BASE64, ICON_512_BASE64 } from "./pwa-assets";
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
+
+// ── PWA: instalable en el teléfono/escritorio ──────────────────────────
+//
+// Alcance real (no prometer de más): instalar funciona en Android/Chrome y
+// escritorio de forma nativa; en iPhone requiere que la familia use el botón
+// "Compartir → Agregar a inicio" de Safari (Apple no permite instalar solo
+// con visitar la página). El service worker de abajo cachea la ÚLTIMA
+// pantalla vista para que no quede en blanco sin conexión — no permite crear
+// ni editar datos sin internet (todo pasa por D1, no hay guardado offline
+// real), y no hay notificaciones push todavía.
+
+export function buildManifest(env: Env): string {
+  return JSON.stringify({
+    name: env.BUSINESS_NAME || "Centro Familiar",
+    short_name: "Familia",
+    description: "Organiza tareas, comidas, ejercicio, compras, recordatorios y finanzas de la familia.",
+    start_url: "/familia",
+    scope: "/familia/",
+    display: "standalone",
+    background_color: "#f7f4ef",
+    theme_color: "#2b6e63",
+    lang: "es",
+    icons: [
+      { src: "/familia/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any maskable" },
+      { src: "/familia/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+    ],
+  });
+}
+
+export function buildServiceWorker(): string {
+  return `const CACHE = "centro-familiar-v1";
+self.addEventListener("install", (e) => { self.skipWaiting(); });
+self.addEventListener("activate", (e) => { self.clients.claim(); });
+self.addEventListener("fetch", (e) => {
+  if (e.request.method !== "GET") return;
+  e.respondWith(
+    fetch(e.request)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
+        return res;
+      })
+      .catch(() => caches.match(e.request).then((cached) => cached || new Response("Sin conexión.", { status: 503 })))
+  );
+});`;
+}
+
+export function decodeIcon(base64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(new ArrayBuffer(bin.length));
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+export { ICON_192_BASE64, ICON_512_BASE64 };
 
 // ── Acciones (llamadas desde las rutas en src/index.ts) ───────────────────
 
@@ -376,6 +432,12 @@ function layout(env: Env, title: string, activeKey: string, bodyHtml: string): s
 <html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · ${esc(env.BUSINESS_NAME || "Centro Familiar")}</title>
+<link rel="manifest" href="/familia/manifest.webmanifest">
+<meta name="theme-color" content="#2b6e63">
+<link rel="apple-touch-icon" href="/familia/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Centro Familiar">
 <style>${SHARED_STYLE}</style>
 </head><body>
 <header>
@@ -386,6 +448,7 @@ function layout(env: Env, title: string, activeKey: string, bodyHtml: string): s
 <main>${bodyHtml}</main>
 <footer>Página privada de la familia — no la compartas fuera de casa.<br><form method="post" action="/familia/salir" style="display:inline"><button type="submit" class="link-btn">Cerrar sesión</button></form></footer>
 <script>${SHARED_SCRIPT}</script>
+<script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/familia/sw.js', { scope: '/familia/' }).catch(function(){}); }</script>
 </body></html>`;
 }
 
