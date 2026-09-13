@@ -124,6 +124,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       nivelFisico: z.enum(["bajo", "medio", "alto"]).optional().describe("Nivel actual de condición física"),
       tiempoDisponible: z.string().optional().describe("ej. '3 veces por semana, 30 min'"),
       lesiones: z.string().optional().describe("Lesiones o limitaciones físicas a respetar en el plan de ejercicio"),
+      dondeEjercicio: z.string().optional().describe("Dónde entrena y con qué equipo cuenta, ej. 'gimnasio con máquinas y pesas libres', 'casa sin equipo', 'casa con mancuernas y banda elástica', 'parque/aire libre'"),
       intereses: z.string().optional().describe("Gustos/intereses (útil sobre todo para niños), ej. 'dinosaurios, dibujar, fútbol'"),
     }),
     execute: async (input) => {
@@ -160,8 +161,8 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
 
       await d.run(
         `INSERT INTO family_members
-          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, permission_tier, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, name, role, access_level, telegram_chat_id, birthdate, weight_kg, height_cm, clothing_size, nationality, allergies, nutrition_goal, fitness_level, time_available, injuries, exercise_setting, interests, permission_tier, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           input.nombre,
@@ -178,6 +179,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
           input.nivelFisico ?? null,
           input.tiempoDisponible ?? null,
           input.lesiones ?? null,
+          input.dondeEjercicio ?? null,
           input.intereses ?? null,
           permissionTier,
           now,
@@ -273,6 +275,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       nivelFisico: z.enum(["bajo", "medio", "alto"]).optional(),
       tiempoDisponible: z.string().optional().describe("ej. '3 veces por semana, 30 min'"),
       lesiones: z.string().optional(),
+      dondeEjercicio: z.string().optional().describe("Dónde entrena y con qué equipo cuenta, ej. 'gimnasio con máquinas y pesas libres', 'casa sin equipo', 'casa con mancuernas y banda elástica', 'parque/aire libre'"),
       intereses: z.string().optional().describe("Gustos/intereses (útil sobre todo para niños)"),
       datosSaludPrivados: z
         .boolean()
@@ -308,6 +311,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
         fitness_level: fields.nivelFisico,
         time_available: fields.tiempoDisponible,
         injuries: fields.lesiones,
+        exercise_setting: fields.dondeEjercicio,
         interests: fields.intereses,
         health_private: fields.datosSaludPrivados === undefined ? undefined : fields.datosSaludPrivados ? 1 : 0,
         permission_tier: fields.nivelPermiso,
@@ -679,7 +683,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
 
   const consultarPerfilFisicoFamilia = tool({
     description:
-      "Trae el perfil físico de toda la familia (edad, IMC, nivel actual, tiempo disponible, lesiones/limitaciones, objetivo) — úsalo antes de armar un plan de ejercicio para que sea de verdad personalizado, no genérico.",
+      "Trae el perfil físico de toda la familia (edad, IMC, nivel actual, tiempo disponible, lesiones/limitaciones, objetivo, dónde entrena y con qué equipo) — úsalo SIEMPRE antes de armar un plan de ejercicio para que sea de verdad personalizado, no genérico. Si a alguien le falta el objetivo o el lugar/equipo, pregúntaselo antes de proponer la rutina — no asumas.",
     inputSchema: z.object({}),
     execute: async () => {
       const members = await listMembers(d);
@@ -694,6 +698,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
             nivelFisico: m.fitness_level,
             tiempoDisponible: m.time_available,
             lesiones: m.injuries,
+            dondeEjercicio: m.exercise_setting,
             objetivo: m.nutrition_goal,
           };
         }),

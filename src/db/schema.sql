@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS family_members (
   fitness_level TEXT,
   time_available TEXT,
   injuries TEXT,
+  exercise_setting TEXT,
   interests TEXT,
   -- permission_tier solo aplica a access_level='full': 'admin' (gestiona el
   -- hogar: invita, revoca, borra) | 'adult' (usa todo, no gestiona la estructura).

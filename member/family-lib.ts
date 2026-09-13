@@ -20,6 +20,7 @@ export interface FamilyMember {
   fitness_level: string | null;
   time_available: string | null;
   injuries: string | null;
+  exercise_setting: string | null;
   interests: string | null;
   permission_tier: "admin" | "adult" | null;
   health_private: number;

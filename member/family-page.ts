@@ -181,8 +181,8 @@ export async function addMemberFromForm(
   }
   await d.run(
     `INSERT INTO family_members
-      (id, name, role, access_level, permission_tier, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, fitness_level, time_available, injuries, interests, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, name, role, access_level, permission_tier, birthdate, weight_kg, height_cm, clothing_size, nationality, food_preferences, allergies, nutrition_goal, fitness_level, time_available, injuries, exercise_setting, interests, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newId(),
       nombre,
@@ -200,6 +200,7 @@ export async function addMemberFromForm(
       form.nivelFisico || null,
       form.tiempoDisponible || null,
       form.lesiones || null,
+      form.dondeEjercicio || null,
       form.intereses || null,
       now,
       now,
@@ -244,7 +245,7 @@ export async function updateMemberFromForm(
     `UPDATE family_members SET
       name = ?, role = ?, access_level = ?, permission_tier = ?, health_private = ?, birthdate = ?, weight_kg = ?, height_cm = ?,
       clothing_size = ?, nationality = ?, food_preferences = ?, allergies = ?, nutrition_goal = ?,
-      fitness_level = ?, time_available = ?, injuries = ?, interests = ?, updated_at = ?
+      fitness_level = ?, time_available = ?, injuries = ?, exercise_setting = ?, interests = ?, updated_at = ?
      WHERE id = ?`,
     [
       (form.nombre || "").trim(),
@@ -263,6 +264,7 @@ export async function updateMemberFromForm(
       form.nivelFisico || null,
       form.tiempoDisponible || null,
       form.lesiones || null,
+      form.dondeEjercicio || null,
       form.intereses || null,
       Date.now(),
       id,
@@ -664,6 +666,7 @@ function memberCard(m: FamilyMember, viewer: FamilyMember | null): string {
   if (canSeeHealth && m.nutrition_goal) rows.push(`<div class="row"><span>Objetivo</span><b>${esc(GOAL_LABEL[m.nutrition_goal] ?? m.nutrition_goal)}</b></div>`);
   if (canSeeHealth && m.fitness_level) rows.push(`<div class="row"><span>Nivel físico</span><b>${esc(FITNESS_LABEL[m.fitness_level] ?? m.fitness_level)}</b></div>`);
   if (canSeeHealth && m.injuries) rows.push(`<div class="row"><span>Lesiones</span><b>${esc(m.injuries)}</b></div>`);
+  if (m.exercise_setting) rows.push(`<div class="row"><span>Dónde entrena</span><b>${esc(m.exercise_setting)}</b></div>`);
   if (m.interests) rows.push(`<div class="row"><span>Intereses</span><b>${esc(m.interests)}</b></div>`);
   if (!canSeeHealth) rows.push(`<div class="empty">🔒 Mantiene sus datos de salud en privado</div>`);
   const badge =
@@ -847,6 +850,7 @@ export async function renderIntegrantesPage(env: Env, viewer: FamilyMember | nul
         <select name="nivelFisico">${fitnessOptions(null)}</select>
         <input type="text" name="tiempoDisponible" placeholder="Tiempo disponible (ej. 3x/sem 30min)">
         <input type="text" name="lesiones" placeholder="Lesiones / limitaciones">
+        <input type="text" name="dondeEjercicio" placeholder="Dónde entrena (gimnasio, casa sin equipo, con mancuernas…)">
         <input type="text" name="intereses" placeholder="Intereses / gustos (útil en niños)">
         <button type="submit">Guardar integrante</button>
       </form>
@@ -1401,6 +1405,7 @@ export async function renderEditMemberPage(env: Env, id: string): Promise<string
       <label class="field">Nivel físico<select name="nivelFisico">${fitnessOptions(m.fitness_level)}</select></label>
       <label class="field">Tiempo disponible<input type="text" name="tiempoDisponible" value="${esc(m.time_available ?? "")}"></label>
       <label class="field">Lesiones / limitaciones<input type="text" name="lesiones" value="${esc(m.injuries ?? "")}"></label>
+      <label class="field">Dónde entrena / equipo disponible<input type="text" name="dondeEjercicio" value="${esc(m.exercise_setting ?? "")}" placeholder="gimnasio, casa sin equipo, con mancuernas…"></label>
       <label class="field">Intereses / gustos<input type="text" name="intereses" value="${esc(m.interests ?? "")}"></label>
       <div class="btn-row">
         <button type="submit">Guardar cambios</button>
