@@ -943,27 +943,44 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const fundInputShape = {
+    nombre: z.string().describe("ej. 'Imprevistos', 'Actividades', 'Alquiler', 'Comida', 'Ahorro vacaciones'"),
+    tipo: z.enum(["porcentaje", "fijo", "ahorro"]),
+    porcentaje: z.number().min(0).max(100).optional().describe("Requerido si tipo='porcentaje'"),
+    montoMensual: z.number().positive().optional().describe("Requerido si tipo='fijo': meta mensual (ej. renta, comida)"),
+    notas: z.string().optional(),
+  };
+
+  const upsertFund = async (input: z.infer<z.ZodObject<typeof fundInputShape>>): Promise<{ error: string } | { ok: true; mensaje: string }> => {
+    if (input.tipo === "porcentaje" && input.porcentaje == null) return { error: `Falta el porcentaje para el sobre "${input.nombre}".` };
+    if (input.tipo === "fijo" && input.montoMensual == null) return { error: `Falta el monto mensual para el sobre "${input.nombre}".` };
+    const now = Date.now();
+    await d.run(
+      `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, notes = excluded.notes, updated_at = excluded.updated_at`,
+      [newId(), input.nombre, input.tipo, input.porcentaje ?? null, input.montoMensual ?? null, input.notas ?? null, now, now],
+    );
+    return { ok: true, mensaje: `Sobre "${input.nombre}" (${input.tipo}${input.tipo === "porcentaje" ? ` ${input.porcentaje}%` : input.tipo === "fijo" ? ` ${input.montoMensual}/mes` : ""}) guardado.` };
+  };
+
   const definirFondoFinanciero = tool({
     description:
-      "Define o actualiza un sobre/fondo financiero para repartir los ingresos automáticamente: 'porcentaje' (ej. 10% para Imprevistos, 10% para Actividades), 'fijo' (un monto mensual objetivo, ej. Alquiler 800, Comida 400 — se va rellenando con cada ingreso hasta llegar a la meta del mes), o 'ahorro' (recibe lo que sobra después de repartir los de arriba, ideal para tener varios sitios de ahorro separados). Antes de crear varios de golpe, PREGÚNTALE a la familia qué porcentajes y montos quieren — no los inventes.",
-    inputSchema: z.object({
-      nombre: z.string().describe("ej. 'Imprevistos', 'Actividades', 'Alquiler', 'Comida', 'Ahorro vacaciones'"),
-      tipo: z.enum(["porcentaje", "fijo", "ahorro"]),
-      porcentaje: z.number().min(0).max(100).optional().describe("Requerido si tipo='porcentaje'"),
-      montoMensual: z.number().positive().optional().describe("Requerido si tipo='fijo': meta mensual (ej. renta, comida)"),
-      notas: z.string().optional(),
-    }),
-    execute: async ({ nombre, tipo, porcentaje, montoMensual, notas }) => {
-      if (tipo === "porcentaje" && porcentaje == null) return { error: "Falta el porcentaje para este sobre." };
-      if (tipo === "fijo" && montoMensual == null) return { error: "Falta el monto mensual para este sobre." };
-      const now = Date.now();
-      await d.run(
-        `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, notes = excluded.notes, updated_at = excluded.updated_at`,
-        [newId(), nombre, tipo, porcentaje ?? null, montoMensual ?? null, notas ?? null, now, now],
-      );
-      return { ok: true, mensaje: `Sobre "${nombre}" (${tipo}${tipo === "porcentaje" ? ` ${porcentaje}%` : tipo === "fijo" ? ` ${montoMensual}/mes` : ""}) guardado. Se aplica desde el próximo ingreso que registres.` };
+      "Define o actualiza UN sobre/fondo financiero: 'porcentaje' (ej. 10% para Imprevistos), 'fijo' (meta mensual, ej. Alquiler 800 — se rellena con cada ingreso hasta llegar a la meta), o 'ahorro' (recibe lo que sobra, para varios sitios de ahorro separados). Para VARIOS sobres de una vez (ej. cada gasto fijo que te dieron) usa definirVariosFondos en una sola llamada — nunca llames esta varias veces seguidas, corta el turno. Antes de crear cualquiera, PREGÚNTALE a la familia qué porcentajes y montos quieren — no los inventes.",
+    inputSchema: z.object(fundInputShape),
+    execute: async (input) => upsertFund(input),
+  });
+
+  const definirVariosFondos = tool({
+    description:
+      "Define o actualiza VARIOS sobres/fondos financieros EN UNA SOLA LLAMADA — úsala siempre que vayas a crear más de uno (ej. un sobre 'fijo' por cada gasto fijo que te dieron, más los de porcentaje/ahorro), en vez de llamar definirFondoFinanciero varias veces seguidas.",
+    inputSchema: z.object({ sobres: z.array(z.object(fundInputShape)).min(1).max(30) }),
+    execute: async ({ sobres }) => {
+      const resultados = [];
+      for (const s of sobres) resultados.push(await upsertFund(s));
+      const errores = resultados.filter((r): r is { error: string } => "error" in r).map((r) => r.error);
+      const ok = resultados.length - errores.length;
+      return { ok: true, mensaje: `${ok} de ${sobres.length} sobres guardados.`, errores: errores.length ? errores : undefined };
     },
   });
 
@@ -1146,6 +1163,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     definirPresupuesto,
     consultarPresupuestos,
     definirFondoFinanciero,
+    definirVariosFondos,
     listarFondosFinancieros,
     unirseConEnlace,
   };
