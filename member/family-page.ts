@@ -684,8 +684,8 @@ function memberCard(m: FamilyMember, viewer: FamilyMember | null): string {
   </div>`;
 }
 
-function choreItem(c: Chore, pending: boolean, assignee: string | null): string {
-  const meta = [assignee, c.due_date].filter(Boolean).join(" · ");
+function choreItem(c: Chore, pending: boolean, assignee: string | null, hideAssignee = false): string {
+  const meta = [hideAssignee ? null : assignee, c.due_date].filter(Boolean).join(" · ");
   return `<li class="${pending ? "" : "done"}">
     <label>
       <input type="checkbox" data-toggle="/familia/tarea/${c.id}/toggle" ${pending ? "" : "checked"}>
@@ -720,10 +720,10 @@ function addChoreForm(members: FamilyMember[], kind: "diaria" | "puntual", categ
   </form>`;
 }
 
-function choreList(list: { c: Chore; pending: boolean }[], nameById: Map<string, string>, emptyMsg: string): string {
+function choreList(list: { c: Chore; pending: boolean }[], nameById: Map<string, string>, emptyMsg: string, hideAssignee = false): string {
   return `<ul class="chores">${
     list.length
-      ? list.map((x) => choreItem(x.c, x.pending, x.c.assigned_to ? nameById.get(x.c.assigned_to) ?? null : null)).join("")
+      ? list.map((x) => choreItem(x.c, x.pending, x.c.assigned_to ? nameById.get(x.c.assigned_to) ?? null : null, hideAssignee)).join("")
       : `<li class="empty-row">${esc(emptyMsg)}</li>`
   }</ul>`;
 }
@@ -839,7 +839,7 @@ export async function renderTareasPage(env: Env): Promise<string> {
   }
   const asignadasHtml = byMember.size
     ? Array.from(byMember.entries())
-        .map(([memberId, items]) => `<div class="assignee-block"><h4>${esc(nameById.get(memberId) ?? "?")}</h4>${choreList(items, nameById, "")}</div>`)
+        .map(([memberId, items]) => `<div class="assignee-block"><h4>${esc(nameById.get(memberId) ?? "?")}</h4>${choreList(items, nameById, "", true)}</div>`)
         .join("")
     : `<p class="empty-row">Nadie tiene pendientes asignados ahorita.</p>`;
 
@@ -1427,7 +1427,7 @@ const SHARED_STYLE = `
   .brand-badge { display:flex; align-items:center; justify-content:center; width:46px; height:46px; border-radius:14px; background:var(--accent-tint); font-size:1.4rem; flex:none; }
   header h1 { margin:0; font-size:1.28rem; text-align:left; }
   header p { margin:2px 0 0; color:var(--ink-soft); font-size:.85rem; text-align:left; }
-  nav { position:sticky; top:0; z-index:10; display:flex; gap:6px; overflow-x:auto; padding:10px 14px; background:var(--surface); border-bottom:1px solid var(--border); box-shadow:var(--shadow-sm); }
+  nav { position:sticky; top:0; z-index:10; display:flex; gap:6px; overflow-x:auto; padding:10px 14px; background:var(--surface); border-bottom:1px solid var(--border); box-shadow:var(--shadow-sm); -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image:linear-gradient(to right, #000 calc(100% - 28px), transparent); }
   nav a { flex:none; display:inline-flex; align-items:center; gap:5px; font-size:.8rem; font-weight:600; text-decoration:none; color:var(--accent); background:var(--accent-tint); padding:6px 12px 6px 8px; border-radius:999px; white-space:nowrap; transition:background .15s ease; }
   nav a .nav-ic { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; }
   nav a.active { background:var(--accent); color:#fff; }
@@ -1491,11 +1491,12 @@ const SHARED_STYLE = `
   ul.chores label { display:flex; align-items:center; gap:10px; cursor:pointer; flex:1; min-width:0; }
   ul.chores input[type=checkbox] { width:19px; height:19px; accent-color:#2b6e63; flex:none; }
   ul.chores li.done .txt { text-decoration:line-through; color:#9aa0b4; }
-  .meta { color:#9aa0b4; font-size:.78rem; white-space:nowrap; }
-  .row-right { display:flex; align-items:center; gap:8px; flex:none; }
+  .meta { color:#9aa0b4; font-size:.78rem; }
+  .row-right { display:flex; align-items:center; gap:8px; flex:none; white-space:nowrap; }
   .del { border:none; background:none; color:#d1d5db; font-size:.95rem; cursor:pointer; padding:2px 6px; }
   .rem-list li { align-items:flex-start; }
-  .rem-info { display:flex; flex-direction:column; gap:2px; }
+  .rem-info { display:flex; flex-direction:column; gap:2px; flex:1 1 auto; min-width:0; }
+  .rem-info .txt { overflow-wrap:break-word; }
   .amount-in { color:#16a34a; }
   .amount-out { color:#b91c1c; }
   .budget-row { margin-bottom:14px; }
