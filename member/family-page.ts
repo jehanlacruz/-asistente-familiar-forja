@@ -27,6 +27,8 @@ import {
   loanPayoff,
   INVITE_TTL_MS,
   MAX_FULL_ACCESS,
+  ACHIEVEMENT_CATALOG,
+  starBalance,
   type FamilyMember,
   type Chore,
   type Reminder,
@@ -35,6 +37,10 @@ import {
   type Debt,
   type Budget,
   type FinanceFund,
+  type StarActivity,
+  type Reward,
+  type RewardRedemption,
+  type AchievementEarned,
 } from "./family-lib";
 import type { Env } from "../src/env";
 import { ICON_192_BASE64, ICON_512_BASE64 } from "./pwa-assets";
@@ -458,6 +464,110 @@ export async function deleteDebt(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM debts WHERE id = ?", [id]);
 }
 
+// ── Estrellas, recompensas y logros ─────────────────────────────────────
+
+export async function giveStarsFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const memberId = form.integranteId || "";
+  if (!memberId) return;
+  const d = db(env);
+  let points: number | null = null;
+  let activityId: string | null = null;
+  let reason: string | null = null;
+  if (form.actividadId) {
+    const act = await d.first<StarActivity>("SELECT * FROM star_activities WHERE id = ?", [form.actividadId]);
+    if (act) {
+      activityId = act.id;
+      points = act.points;
+      reason = act.name;
+    }
+  } else if (form.puntos) {
+    points = Number(form.puntos);
+    reason = form.razon || null;
+  }
+  if (points == null || Number.isNaN(points) || points === 0) return;
+  await d.run(
+    "INSERT INTO star_awards (id, member_id, activity_id, reason, points, awarded_by, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?)",
+    [newId(), memberId, activityId, reason, points, Date.now()],
+  );
+}
+
+export async function setStarActivityFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const nombre = (form.nombre || "").trim();
+  const puntos = Number(form.puntos);
+  if (!nombre || !puntos) return;
+  const d = db(env);
+  const existing = await d.first<{ id: string }>("SELECT id FROM star_activities WHERE lower(name) = lower(?)", [nombre]);
+  if (existing) {
+    await d.run("UPDATE star_activities SET points = ? WHERE id = ?", [puntos, existing.id]);
+  } else {
+    await d.run("INSERT INTO star_activities (id, name, points, created_at) VALUES (?, ?, ?, ?)", [newId(), nombre, puntos, Date.now()]);
+  }
+}
+
+export async function deleteStarActivity(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM star_activities WHERE id = ?", [id]);
+}
+
+export async function setRewardFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const nombre = (form.nombre || "").trim();
+  const costo = Number(form.costo);
+  if (!nombre || !costo) return;
+  const d = db(env);
+  const existing = await d.first<{ id: string }>("SELECT id FROM rewards WHERE lower(name) = lower(?)", [nombre]);
+  if (existing) {
+    await d.run("UPDATE rewards SET cost_stars = ? WHERE id = ?", [costo, existing.id]);
+  } else {
+    await d.run("INSERT INTO rewards (id, name, cost_stars, created_at) VALUES (?, ?, ?, ?)", [newId(), nombre, costo, Date.now()]);
+  }
+}
+
+export async function deleteReward(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM rewards WHERE id = ?", [id]);
+}
+
+export async function requestRedemptionFromForm(env: Env, form: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
+  const memberId = form.integranteId || "";
+  const rewardId = form.recompensaId || "";
+  if (!memberId || !rewardId) return { ok: false, error: "Faltan datos." };
+  const d = db(env);
+  const reward = await d.first<Reward>("SELECT * FROM rewards WHERE id = ?", [rewardId]);
+  if (!reward) return { ok: false, error: "No encontré esa recompensa." };
+  const balance = await starBalance(d, memberId);
+  if (balance < reward.cost_stars) return { ok: false, error: `Faltan ${reward.cost_stars - balance} ⭐ para "${reward.name}".` };
+  await d.run(
+    "INSERT INTO reward_redemptions (id, member_id, reward_id, reward_name, cost_stars, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+    [newId(), memberId, reward.id, reward.name, reward.cost_stars, Date.now()],
+  );
+  return { ok: true };
+}
+
+export async function resolveRedemption(env: Env, id: string, approve: boolean): Promise<void> {
+  const d = db(env);
+  const redemption = await d.first<RewardRedemption>("SELECT * FROM reward_redemptions WHERE id = ? AND status = 'pending'", [id]);
+  if (!redemption) return;
+  const now = Date.now();
+  await d.run("UPDATE reward_redemptions SET status = ?, resolved_at = ? WHERE id = ?", [approve ? "approved" : "rejected", now, id]);
+  if (approve) {
+    await d.run(
+      "INSERT INTO star_awards (id, member_id, activity_id, reason, points, awarded_by, created_at) VALUES (?, ?, NULL, ?, ?, NULL, ?)",
+      [newId(), redemption.member_id, `Canje: ${redemption.reward_name}`, -redemption.cost_stars, now],
+    );
+  }
+}
+
+export async function giveAchievementFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const memberId = form.integranteId || "";
+  const badgeKey = form.logro || "";
+  if (!memberId || !ACHIEVEMENT_CATALOG[badgeKey]) return;
+  const d = db(env);
+  const already = await d.first<{ id: string }>("SELECT id FROM achievements_earned WHERE member_id = ? AND badge_key = ?", [memberId, badgeKey]);
+  if (already) return;
+  await d.run(
+    "INSERT INTO achievements_earned (id, member_id, badge_key, awarded_by, created_at) VALUES (?, ?, ?, NULL, ?)",
+    [newId(), memberId, badgeKey, Date.now()],
+  );
+}
+
 export async function deleteMember(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM family_members WHERE id = ?", [id]);
 }
@@ -589,6 +699,7 @@ const NAV = [
   { key: "finanzas", href: "/familia/finanzas", icon: "💶", label: "Finanzas" },
   { key: "creditos", href: "/familia/creditos", icon: "💳", label: "Créditos" },
   { key: "ninos", href: "/familia/ninos", icon: "🧸", label: "Niños" },
+  { key: "recompensas", href: "/familia/recompensas", icon: "⭐", label: "Recompensas" },
 ];
 
 function layout(env: Env, title: string, activeKey: string, bodyHtml: string): string {
@@ -795,6 +906,8 @@ export async function renderHome(env: Env): Promise<string> {
   const debtsSummary = await d.first<{ n: number; total: number }>(
     "SELECT COUNT(*) as n, COALESCE(SUM(balance), 0) as total FROM debts",
   );
+  const starsSummary = await d.first<{ total: number }>("SELECT COALESCE(SUM(points), 0) as total FROM star_awards");
+  const pendingRedemptions = await d.first<{ n: number }>("SELECT COUNT(*) as n FROM reward_redemptions WHERE status = 'pending'");
 
   const menuResumen = menu ? [menu.breakfast, menu.lunch, menu.dinner].filter(Boolean).join(" · ") : null;
 
@@ -825,6 +938,7 @@ export async function renderHome(env: Env): Promise<string> {
     ${hubCard("/familia/finanzas", "💶", "Finanzas", `Balance del mes: ${((balanceRow?.ingresos ?? 0) - (balanceRow?.gastos ?? 0)).toFixed(2)}${cur}`, "blue")}
     ${hubCard("/familia/creditos", "💳", "Créditos y préstamos", (debtsSummary?.n ?? 0) > 0 ? `${debtsSummary?.n} activo${debtsSummary?.n === 1 ? "" : "s"} · ${(debtsSummary?.total ?? 0).toFixed(2)}${cur}` : "Sin deudas registradas", "cyan")}
     ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas y favoritas guardadas", "yellow")}
+    ${hubCard("/familia/recompensas", "⭐", "Recompensas", (pendingRedemptions?.n ?? 0) > 0 ? `${pendingRedemptions?.n} canje${pendingRedemptions?.n === 1 ? "" : "s"} por aprobar` : `${starsSummary?.total ?? 0} ⭐ en la familia`, "yellow")}
     ${hubCard("/familia/integrantes", "👪", "Integrantes", "Perfiles de la familia", "violet")}
   </div>`;
 
@@ -1407,6 +1521,121 @@ export async function renderNinosPage(env: Env): Promise<string> {
       <p class="soon-note">Marca ⭐ la casilla de una actividad cuando ya la probaron y funcionó, para acordarte de repetirla.</p>
     </section>`;
   return layout(env, "Niños", "ninos", body);
+}
+
+// ── Página: Recompensas (estrellas, tienda y logros) ─────────────────────
+
+export async function renderRecompensasPage(env: Env): Promise<string> {
+  const d = db(env);
+  const members = await listMembers(d);
+  const nameById = new Map(members.map((m) => [m.id, m.name]));
+
+  const balances = await Promise.all(members.map(async (m) => ({ m, balance: await starBalance(d, m.id) })));
+  const achievements = await d.all<{ member_id: string; badge_key: string }>("SELECT member_id, badge_key FROM achievements_earned");
+  const badgesByMember = new Map<string, string[]>();
+  for (const a of achievements) {
+    const list = badgesByMember.get(a.member_id) ?? [];
+    list.push(a.badge_key);
+    badgesByMember.set(a.member_id, list);
+  }
+
+  const memberCard = ({ m, balance }: { m: FamilyMember; balance: number }) => {
+    const badges = badgesByMember.get(m.id) ?? [];
+    return `<div class="card">
+      <div class="card-head"><h3>${esc(m.name)}</h3><span class="badge ok">${balance} ⭐</span></div>
+      <div class="role">${esc(m.role)}</div>
+      ${badges.length ? `<div class="row"><span>Logros</span><b>${badges.map((k) => ACHIEVEMENT_CATALOG[k]?.emoji ?? "🏅").join(" ")}</b></div>` : `<div class="empty">Sin logros todavía</div>`}
+    </div>`;
+  };
+
+  const activities = await d.all<StarActivity>("SELECT * FROM star_activities ORDER BY points DESC");
+  const rewards = await d.all<Reward>("SELECT * FROM rewards ORDER BY cost_stars ASC");
+  const pending = await d.all<RewardRedemption>("SELECT * FROM reward_redemptions WHERE status = 'pending' ORDER BY created_at ASC");
+
+  const memberOptions = members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+
+  const activityRow = (a: StarActivity) => `<li>
+    <span class="txt">${esc(a.name)}</span>
+    <span class="row-right">
+      <span class="meta">${a.points} ⭐</span>
+      <button class="del" data-del="/familia/actividad-estrella/${a.id}/borrar" title="Borrar">✕</button>
+    </span>
+  </li>`;
+
+  const rewardRow = (r: Reward) => `<li>
+    <div class="rem-info">
+      <span class="txt">${esc(r.name)}</span>
+      <form method="post" action="/familia/canje" style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+        <input type="hidden" name="recompensaId" value="${r.id}">
+        <select name="integranteId" required style="flex:1 1 130px;"><option value="">Canjear para…</option>${memberOptions}</select>
+        <button type="submit" class="btn-secondary" style="padding:5px 10px;font-size:.78rem;">Solicitar</button>
+      </form>
+    </div>
+    <span class="row-right">
+      <span class="meta">${r.cost_stars} ⭐</span>
+      <button class="del" data-del="/familia/recompensa/${r.id}/borrar" title="Borrar">✕</button>
+    </span>
+  </li>`;
+
+  const pendingRow = (p: RewardRedemption) => `<li>
+    <div class="rem-info">
+      <span class="txt">${esc(nameById.get(p.member_id) ?? "?")} quiere "${esc(p.reward_name)}"</span>
+      <span class="meta">${p.cost_stars} ⭐</span>
+    </div>
+    <span class="row-right">
+      <form method="post" action="/familia/canje/${p.id}/resolver" style="display:inline"><input type="hidden" name="aprobar" value="1"><button type="submit" class="btn-secondary" style="padding:5px 10px;font-size:.78rem;">✓ Aprobar</button></form>
+      <form method="post" action="/familia/canje/${p.id}/resolver" style="display:inline"><input type="hidden" name="aprobar" value="0"><button type="submit" class="del" title="Rechazar">✕</button></form>
+    </span>
+  </li>`;
+
+  const badgeOptions = Object.entries(ACHIEVEMENT_CATALOG)
+    .map(([key, b]) => `<option value="${key}">${b.emoji} ${esc(b.label)}</option>`)
+    .join("");
+
+  const body = `
+    <section class="panel">
+      <h2><span class="icon-badge tone-yellow">⭐</span>Estrellas de la familia</h2>
+      <div class="grid">${balances.map(memberCard).join("") || `<div class="card">Todavía no hay integrantes.</div>`}</div>
+      <form class="add-form" method="post" action="/familia/estrella">
+        <select name="integranteId" required><option value="">¿Quién?</option>${memberOptions}</select>
+        <select name="actividadId"><option value="">Actividad (opcional)</option>${activities.map((a) => `<option value="${a.id}">${esc(a.name)} (${a.points} ⭐)</option>`).join("")}</select>
+        <input type="number" name="puntos" placeholder="O estrellas directo (usa negativo para corregir)">
+        <input type="text" name="razon" placeholder="Motivo (si no elegiste actividad)">
+        <button type="submit">+ Dar estrellas</button>
+      </form>
+    </section>
+    <section class="panel">
+      <h2><span class="icon-badge tone-yellow">🧺</span>Actividades que ganan estrellas</h2>
+      <ul class="chores">${activities.length ? activities.map(activityRow).join("") : `<li class="empty-row">Sin actividades configuradas.</li>`}</ul>
+      <form class="add-form" method="post" action="/familia/actividad-estrella">
+        <input type="text" name="nombre" placeholder="Nombre (ej. Hacer la cama)" required>
+        <input type="number" name="puntos" placeholder="Estrellas" required>
+        <button type="submit">+ Agregar</button>
+      </form>
+    </section>
+    <section class="panel">
+      <h2><span class="icon-badge tone-yellow">🎁</span>Tienda de recompensas</h2>
+      <ul class="chores rem-list">${rewards.length ? rewards.map(rewardRow).join("") : `<li class="empty-row">Sin recompensas configuradas.</li>`}</ul>
+      <form class="add-form" method="post" action="/familia/recompensa">
+        <input type="text" name="nombre" placeholder="Nombre (ej. Helado)" required>
+        <input type="number" name="costo" placeholder="Costo en estrellas" required>
+        <button type="submit">+ Agregar</button>
+      </form>
+      <p class="soon-note">Al solicitar un canje (aquí o pidiéndoselo al bot) queda pendiente hasta que lo apruebes abajo — no se descuentan las estrellas todavía.</p>
+    </section>
+    <section class="panel">
+      <h2><span class="icon-badge tone-yellow">⏳</span>Canjes pendientes</h2>
+      <ul class="chores rem-list">${pending.length ? pending.map(pendingRow).join("") : `<li class="empty-row">Sin canjes pendientes.</li>`}</ul>
+    </section>
+    <section class="panel">
+      <h2><span class="icon-badge tone-yellow">🏆</span>Dar un logro</h2>
+      <form class="add-form" method="post" action="/familia/logro">
+        <select name="integranteId" required><option value="">¿Quién?</option>${memberOptions}</select>
+        <select name="logro" required><option value="">¿Qué logro?</option>${badgeOptions}</select>
+        <button type="submit">🎉 Dar logro</button>
+      </form>
+    </section>`;
+  return layout(env, "Recompensas", "recompensas", body);
 }
 
 // ── Página: editar integrante ────────────────────────────────────────────

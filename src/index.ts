@@ -50,6 +50,15 @@ import {
   setDebtFromForm,
   deleteDebt,
   renderNinosPage,
+  renderRecompensasPage,
+  giveStarsFromForm,
+  setStarActivityFromForm,
+  deleteStarActivity,
+  setRewardFromForm,
+  deleteReward,
+  requestRedemptionFromForm,
+  resolveRedemption,
+  giveAchievementFromForm,
   addActivityFromForm,
   toggleActivityFavorite,
   deleteActivity,
@@ -755,6 +764,42 @@ app.post("/familia/deuda/:id/borrar", async (c) => {
   return c.body(null, 204);
 });
 app.get("/familia/ninos", async (c) => c.html(await renderNinosPage(c.env)));
+app.get("/familia/recompensas", async (c) => c.html(await renderRecompensasPage(c.env)));
+app.post("/familia/estrella", async (c) => {
+  await giveStarsFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/recompensas");
+});
+app.post("/familia/actividad-estrella", async (c) => {
+  await setStarActivityFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/recompensas");
+});
+app.post("/familia/actividad-estrella/:id/borrar", async (c) => {
+  await deleteStarActivity(c.env, c.req.param("id"));
+  return c.body(null, 204);
+});
+app.post("/familia/recompensa", async (c) => {
+  await setRewardFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/recompensas");
+});
+app.post("/familia/recompensa/:id/borrar", async (c) => {
+  await deleteReward(c.env, c.req.param("id"));
+  return c.body(null, 204);
+});
+app.post("/familia/canje", async (c) => {
+  const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+  const result = await requestRedemptionFromForm(c.env, form);
+  if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/recompensas">Volver</a>`, 400);
+  return c.redirect("/familia/recompensas");
+});
+app.post("/familia/canje/:id/resolver", async (c) => {
+  const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+  await resolveRedemption(c.env, c.req.param("id"), form.aprobar === "1");
+  return c.redirect("/familia/recompensas");
+});
+app.post("/familia/logro", async (c) => {
+  await giveAchievementFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/recompensas");
+});
 app.post("/familia/actividad", async (c) => {
   await addActivityFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
   return c.redirect("/familia/ninos");

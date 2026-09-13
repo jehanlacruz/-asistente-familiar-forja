@@ -27,6 +27,8 @@ import {
   loanPayoff,
   INVITE_TTL_MS,
   MAX_FULL_ACCESS,
+  ACHIEVEMENT_CATALOG,
+  starBalance,
   type FamilyMember,
   type Chore,
   type Reminder,
@@ -34,6 +36,9 @@ import {
   type Budget,
   type FinanceFund,
   type Debt,
+  type StarActivity,
+  type Reward,
+  type RewardRedemption,
 } from "./family-lib";
 
 async function requireFullAccessSender(
@@ -867,6 +872,232 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  // ── Estrellas, recompensas y logros ───────────────────────────────────
+
+  const definirActividadEstrella = tool({
+    description:
+      "Crea o actualiza una actividad que gana estrellas (ej. 'Hacer la cama' = 2 estrellas). Ya hay una lista base cargada — usa esta tool solo para agregar una nueva o cambiar el valor de una existente, no la repitas si ya existe (usa listarActividadesEstrella para revisar antes).",
+    inputSchema: z.object({
+      nombre: z.string(),
+      estrellas: z.number().int().positive().describe("Cuántas estrellas vale completar esta actividad"),
+    }),
+    execute: async ({ nombre, estrellas }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+      const existing = await d.first<StarActivity>("SELECT * FROM star_activities WHERE lower(name) = lower(?)", [nombre]);
+      const now = Date.now();
+      if (existing) {
+        await d.run("UPDATE star_activities SET points = ? WHERE id = ?", [estrellas, existing.id]);
+      } else {
+        await d.run("INSERT INTO star_activities (id, name, points, created_at) VALUES (?, ?, ?, ?)", [newId(), nombre, estrellas, now]);
+      }
+      return { ok: true, mensaje: `Actividad "${nombre}" vale ${estrellas} ⭐.` };
+    },
+  });
+
+  const listarActividadesEstrella = tool({
+    description: "Lista las actividades configuradas que ganan estrellas y cuánto vale cada una.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const rows = await d.all<StarActivity>("SELECT * FROM star_activities ORDER BY points DESC");
+      return { actividades: rows.map((r) => ({ nombre: r.name, estrellas: r.points })) };
+    },
+  });
+
+  const otorgarEstrellas = tool({
+    description:
+      "Da estrellas a un integrante por una actividad (usa el nombre exacto de una ya configurada) o por una razón libre. Usa un número NEGATIVO de estrellas para corregir un error (quitar estrellas mal otorgadas) — explica siempre por qué. Solo alguien con acceso completo puede otorgar o quitar estrellas, nunca el propio niño.",
+    inputSchema: z.object({
+      nombre: z.string().describe("Integrante que recibe (o pierde) las estrellas"),
+      actividad: z.string().optional().describe("Nombre exacto de una actividad ya configurada (ver listarActividadesEstrella)"),
+      estrellas: z.number().int().optional().describe("Cantidad — requerido si no se da 'actividad' (que ya trae su propio valor). Negativo para corregir un error."),
+      razon: z.string().optional().describe("Motivo si no es por una actividad configurada, o nota de la corrección"),
+    }),
+    execute: async ({ nombre, actividad, estrellas, razon }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+
+      let activityId: string | null = null;
+      let points = estrellas ?? null;
+      if (actividad) {
+        const act = await d.first<StarActivity>("SELECT * FROM star_activities WHERE lower(name) = lower(?)", [actividad]);
+        if (!act) return { error: `No encontré la actividad "${actividad}" — créala primero con definirActividadEstrella o dame el número de estrellas directo.` };
+        activityId = act.id;
+        points = points ?? act.points;
+      }
+      if (points == null) return { error: "Necesito cuántas estrellas dar (o una actividad configurada que ya traiga su valor)." };
+
+      const now = Date.now();
+      await d.run(
+        "INSERT INTO star_awards (id, member_id, activity_id, reason, points, awarded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [newId(), member.id, activityId, razon ?? null, points, check.member.id, now],
+      );
+      const balance = await starBalance(d, member.id);
+      return {
+        ok: true,
+        mensaje: `${points > 0 ? "+" : ""}${points} ⭐ para ${member.name}${actividad ? ` por "${actividad}"` : razon ? ` (${razon})` : ""}. Ahora tiene ${balance} ⭐ en total.`,
+        balanceActual: balance,
+      };
+    },
+  });
+
+  const consultarEstrellas = tool({
+    description: "Consulta cuántas estrellas tiene un integrante (o todos si no se da nombre).",
+    inputSchema: z.object({ nombre: z.string().optional() }),
+    execute: async ({ nombre }) => {
+      if (nombre) {
+        const member = await findMemberByName(d, nombre);
+        if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+        return { nombre: member.name, estrellas: await starBalance(d, member.id) };
+      }
+      const members = await listMembers(d);
+      const result = [];
+      for (const m of members) result.push({ nombre: m.name, estrellas: await starBalance(d, m.id) });
+      return { integrantes: result };
+    },
+  });
+
+  const definirRecompensa = tool({
+    description: "Crea o actualiza una recompensa de la tienda familiar (ej. 'Helado' = 20 estrellas). Ya hay una lista base cargada.",
+    inputSchema: z.object({
+      nombre: z.string(),
+      costoEstrellas: z.number().int().positive(),
+    }),
+    execute: async ({ nombre, costoEstrellas }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+      const existing = await d.first<Reward>("SELECT * FROM rewards WHERE lower(name) = lower(?)", [nombre]);
+      const now = Date.now();
+      if (existing) {
+        await d.run("UPDATE rewards SET cost_stars = ? WHERE id = ?", [costoEstrellas, existing.id]);
+      } else {
+        await d.run("INSERT INTO rewards (id, name, cost_stars, created_at) VALUES (?, ?, ?, ?)", [newId(), nombre, costoEstrellas, now]);
+      }
+      return { ok: true, mensaje: `Recompensa "${nombre}" cuesta ${costoEstrellas} ⭐.` };
+    },
+  });
+
+  const listarRecompensas = tool({
+    description: "Lista las recompensas disponibles en la tienda familiar y su costo en estrellas.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const rows = await d.all<Reward>("SELECT * FROM rewards ORDER BY cost_stars ASC");
+      return { recompensas: rows.map((r) => ({ nombre: r.name, costoEstrellas: r.cost_stars })) };
+    },
+  });
+
+  const canjearRecompensa = tool({
+    description:
+      "Solicita canjear una recompensa para un integrante — queda pendiente de aprobación de un adulto (resolverCanjeRecompensa), no descuenta las estrellas todavía. Avisa si no le alcanzan las estrellas.",
+    inputSchema: z.object({
+      nombre: z.string().describe("Quién quiere canjear"),
+      recompensa: z.string().describe("Nombre exacto de una recompensa de listarRecompensas"),
+    }),
+    execute: async ({ nombre, recompensa }) => {
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+      const reward = await d.first<Reward>("SELECT * FROM rewards WHERE lower(name) = lower(?)", [recompensa]);
+      if (!reward) return { error: `No encontré la recompensa "${recompensa}" — revisa listarRecompensas.` };
+      const balance = await starBalance(d, member.id);
+      if (balance < reward.cost_stars) {
+        return { error: `A ${member.name} le faltan ${reward.cost_stars - balance} ⭐ para "${reward.name}" (tiene ${balance}, necesita ${reward.cost_stars}).` };
+      }
+      const now = Date.now();
+      await d.run(
+        "INSERT INTO reward_redemptions (id, member_id, reward_id, reward_name, cost_stars, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+        [newId(), member.id, reward.id, reward.name, reward.cost_stars, now],
+      );
+      return { ok: true, mensaje: `Solicitud de "${reward.name}" para ${member.name} queda pendiente — un adulto debe aprobarla con resolverCanjeRecompensa.` };
+    },
+  });
+
+  const listarCanjesPendientes = tool({
+    description: "Lista los canjes de recompensas pendientes de aprobar.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const rows = await d.all<RewardRedemption & { name: string }>(
+        `SELECT rr.*, fm.name as name FROM reward_redemptions rr JOIN family_members fm ON fm.id = rr.member_id WHERE rr.status = 'pending' ORDER BY rr.created_at ASC`,
+      );
+      return { pendientes: rows.map((r) => ({ id: r.id, nombre: r.name, recompensa: r.reward_name, costoEstrellas: r.cost_stars })) };
+    },
+  });
+
+  const resolverCanjeRecompensa = tool({
+    description: "Aprueba o rechaza un canje de recompensa pendiente (usa listarCanjesPendientes para ver los ids/nombres). Al aprobar, se descuentan las estrellas.",
+    inputSchema: z.object({
+      nombre: z.string().describe("Integrante cuyo canje se resuelve"),
+      recompensa: z.string().describe("Nombre de la recompensa solicitada"),
+      aprobar: z.boolean().describe("true = aprobar y descontar estrellas, false = rechazar sin descontar"),
+    }),
+    execute: async ({ nombre, recompensa, aprobar }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+      const redemption = await d.first<RewardRedemption>(
+        "SELECT * FROM reward_redemptions WHERE member_id = ? AND status = 'pending' AND lower(reward_name) = lower(?) ORDER BY created_at ASC LIMIT 1",
+        [member.id, recompensa],
+      );
+      if (!redemption) return { error: `No encontré un canje pendiente de "${recompensa}" para ${member.name}.` };
+      const now = Date.now();
+      await d.run("UPDATE reward_redemptions SET status = ?, resolved_at = ? WHERE id = ?", [aprobar ? "approved" : "rejected", now, redemption.id]);
+      if (aprobar) {
+        await d.run(
+          "INSERT INTO star_awards (id, member_id, activity_id, reason, points, awarded_by, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?)",
+          [newId(), member.id, `Canje: ${redemption.reward_name}`, -redemption.cost_stars, check.member.id, now],
+        );
+        return { ok: true, mensaje: `🎉 Canje de "${redemption.reward_name}" para ${member.name} aprobado — se descontaron ${redemption.cost_stars} ⭐.` };
+      }
+      return { ok: true, mensaje: `Canje de "${redemption.reward_name}" para ${member.name} rechazado, no se descontó nada.` };
+    },
+  });
+
+  const otorgarLogro = tool({
+    description: `Da una insignia/logro a un integrante. Claves válidas: ${Object.entries(ACHIEVEMENT_CATALOG)
+      .map(([k, v]) => `${k} (${v.emoji} ${v.label})`)
+      .join(", ")}. Celebra el logro con la familia cuando lo des.`,
+    inputSchema: z.object({
+      nombre: z.string(),
+      logro: z.enum(Object.keys(ACHIEVEMENT_CATALOG) as [string, ...string[]]),
+    }),
+    execute: async ({ nombre, logro }) => {
+      const check = await requireFullAccessSender(ctx);
+      if (!check.ok) return { error: check.error };
+      const member = await findMemberByName(d, nombre);
+      if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+      const badge = ACHIEVEMENT_CATALOG[logro];
+      const already = await d.first<{ id: string }>("SELECT id FROM achievements_earned WHERE member_id = ? AND badge_key = ?", [member.id, logro]);
+      if (already) return { error: `${member.name} ya tiene el logro "${badge.label}".` };
+      await d.run(
+        "INSERT INTO achievements_earned (id, member_id, badge_key, awarded_by, created_at) VALUES (?, ?, ?, ?, ?)",
+        [newId(), member.id, logro, check.member.id, Date.now()],
+      );
+      return { ok: true, mensaje: `🎉 ¡Felicidades! ${member.name} consiguió: ${badge.emoji} ${badge.label}` };
+    },
+  });
+
+  const listarLogros = tool({
+    description: "Lista los logros/insignias que tiene un integrante (o todos si no se da nombre).",
+    inputSchema: z.object({ nombre: z.string().optional() }),
+    execute: async ({ nombre }) => {
+      const fmt = (rows: { member_id: string; badge_key: string }[], members: FamilyMember[]) => {
+        const nameById = new Map(members.map((m) => [m.id, m.name]));
+        return rows.map((r) => ({ nombre: nameById.get(r.member_id) ?? "?", logro: ACHIEVEMENT_CATALOG[r.badge_key]?.label ?? r.badge_key, emoji: ACHIEVEMENT_CATALOG[r.badge_key]?.emoji ?? "🏅" }));
+      };
+      const members = await listMembers(d);
+      if (nombre) {
+        const member = await findMemberByName(d, nombre);
+        if (!member) return { error: `No encontré a ningún integrante llamado ${nombre}.` };
+        const rows = await d.all<{ member_id: string; badge_key: string }>("SELECT member_id, badge_key FROM achievements_earned WHERE member_id = ?", [member.id]);
+        return { logros: fmt(rows, members) };
+      }
+      const rows = await d.all<{ member_id: string; badge_key: string }>("SELECT member_id, badge_key FROM achievements_earned");
+      return { logros: fmt(rows, members) };
+    },
+  });
+
   const registrarTransaccion = tool({
     description:
       "Registra un ingreso o un gasto. Si es un INGRESO y hay sobres/fondos definidos (definirFondoFinanciero), el dinero se reparte SOLO entre ellos automáticamente (porcentajes primero, luego fijos como alquiler/comida hasta su meta del mes, el resto a ahorro) — te devuelve el reparto para que se lo cuentes a la familia. Si es un GASTO y coincide con un sobre (por categoría o por el parámetro fondo), se descuenta de ese sobre y avisa si lo deja en negativo; si hay presupuesto simple definido para la categoría (o 'Total'), también avisa si se pasa.",
@@ -1351,6 +1582,17 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     listarActividadesFamiliares,
     marcarActividadFavorita,
     consultarInteresesNinos,
+    definirActividadEstrella,
+    listarActividadesEstrella,
+    otorgarEstrellas,
+    consultarEstrellas,
+    definirRecompensa,
+    listarRecompensas,
+    canjearRecompensa,
+    listarCanjesPendientes,
+    resolverCanjeRecompensa,
+    otorgarLogro,
+    listarLogros,
     registrarTransaccion,
     listarTransacciones,
     definirPresupuesto,

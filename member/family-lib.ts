@@ -361,4 +361,70 @@ export function loanPayoff(balance: number, annualRatePct: number | null, monthl
   return { months, totalInterest: Math.round((totalPaid - balance) * 100) / 100, totalPaid: Math.round(totalPaid * 100) / 100 };
 }
 
+// ── Estrellas, recompensas y logros ─────────────────────────────────────
+
+export interface StarActivity {
+  id: string;
+  name: string;
+  points: number;
+  created_at: number;
+}
+
+export interface StarAward {
+  id: string;
+  member_id: string;
+  activity_id: string | null;
+  reason: string | null;
+  points: number;
+  awarded_by: string | null;
+  created_at: number;
+}
+
+export interface Reward {
+  id: string;
+  name: string;
+  cost_stars: number;
+  created_at: number;
+}
+
+export interface RewardRedemption {
+  id: string;
+  member_id: string;
+  reward_id: string | null;
+  reward_name: string;
+  cost_stars: number;
+  status: "pending" | "approved" | "rejected";
+  created_at: number;
+  resolved_at: number | null;
+}
+
+export interface AchievementEarned {
+  id: string;
+  member_id: string;
+  badge_key: string;
+  awarded_by: string | null;
+  created_at: number;
+}
+
+/** Catálogo FIJO de logros — no se crean claves nuevas dinámicamente. */
+export const ACHIEVEMENT_CATALOG: Record<string, { emoji: string; label: string }> = {
+  super_ayudante: { emoji: "🏆", label: "Súper ayudante" },
+  gran_lector: { emoji: "📚", label: "Gran lector" },
+  maestro_orden: { emoji: "🧹", label: "Maestro del orden" },
+  ayudante_familia: { emoji: "❤️", label: "Ayudante de la familia" },
+  deportista: { emoji: "⚽", label: "Deportista" },
+  semana_perfecta: { emoji: "🌟", label: "Semana perfecta" },
+  racha_7dias: { emoji: "🔥", label: "7 días seguidos" },
+  diez_tareas: { emoji: "🎯", label: "10 tareas completadas" },
+};
+
+/** Balance actual de estrellas de un integrante (puede ser negativo si hubo correcciones). */
+export async function starBalance(db: Db, memberId: string): Promise<number> {
+  const row = await db.first<{ total: number }>(
+    "SELECT COALESCE(SUM(points), 0) as total FROM star_awards WHERE member_id = ?",
+    [memberId],
+  );
+  return row?.total ?? 0;
+}
+
 export const db = (env: Env) => new Db(env.DB);

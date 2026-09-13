@@ -550,3 +550,61 @@ CREATE TABLE IF NOT EXISTS debts (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- ── Estrellas, recompensas y logros (motivación para los niños) ──────────
+
+CREATE TABLE IF NOT EXISTS star_activities (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  points INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+-- Cada fila es un movimiento de estrellas (positivo = otorgadas, negativo =
+-- corrección de un error). El balance de un integrante = SUM(points).
+CREATE TABLE IF NOT EXISTS star_awards (
+  id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL,
+  activity_id TEXT,
+  reason TEXT,
+  points INTEGER NOT NULL,
+  awarded_by TEXT,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE,
+  FOREIGN KEY (activity_id) REFERENCES star_activities(id) ON DELETE SET NULL,
+  FOREIGN KEY (awarded_by) REFERENCES family_members(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_star_awards_member ON star_awards(member_id);
+
+CREATE TABLE IF NOT EXISTS rewards (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  cost_stars INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reward_redemptions (
+  id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL,
+  reward_id TEXT,
+  reward_name TEXT NOT NULL,
+  cost_stars INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE,
+  FOREIGN KEY (reward_id) REFERENCES rewards(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_redemptions_status ON reward_redemptions(status);
+
+-- badge_key = clave fija del catálogo de logros (ver ACHIEVEMENT_CATALOG en
+-- member/family-lib.ts) — no se crean logros nuevos dinámicamente.
+CREATE TABLE IF NOT EXISTS achievements_earned (
+  id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL,
+  badge_key TEXT NOT NULL,
+  awarded_by TEXT,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_achievements_member ON achievements_earned(member_id);
