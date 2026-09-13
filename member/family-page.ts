@@ -157,8 +157,8 @@ export async function addShoppingItemFromForm(env: Env, form: Record<string, str
   const d = db(env);
   const now = Date.now();
   await d.run(
-    `INSERT INTO shopping_items (id, name, category, status, added_by, created_at, updated_at) VALUES (?, ?, ?, 'pending', NULL, ?, ?)`,
-    [newId(), nombre, form.categoria || null, now, now],
+    `INSERT INTO shopping_items (id, name, category, quantity, status, added_by, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)`,
+    [newId(), nombre, form.categoria || null, form.cantidad || null, now, now],
   );
 }
 
@@ -994,17 +994,19 @@ export async function renderMenuPage(env: Env): Promise<string> {
 // ── Página: Lista de la compra ──────────────────────────────────────────
 
 export async function renderCompraPage(env: Env): Promise<string> {
-  const shopping = await db(env).all<{ id: string; name: string; category: string | null; status: string }>(
-    "SELECT id, name, category, status FROM shopping_items ORDER BY status ASC, created_at ASC",
+  const shopping = await db(env).all<{ id: string; name: string; category: string | null; quantity: string | null; prep_note: string | null; status: string }>(
+    "SELECT id, name, category, quantity, prep_note, status FROM shopping_items ORDER BY status ASC, created_at ASC",
   );
   const shoppingPending = shopping.filter((s) => s.status === "pending");
   const shoppingItem = (s: (typeof shopping)[number]) => `<li class="${s.status === "bought" ? "done" : ""}">
     <label>
       <input type="checkbox" data-toggle="/familia/compra/${s.id}/toggle" ${s.status === "bought" ? "checked" : ""}>
-      <span class="txt">${esc(s.name)}</span>
+      <div class="rem-info">
+        <span class="txt">${esc(s.name)}${s.quantity ? ` <span class="meta">· ${esc(s.quantity)}</span>` : ""}</span>
+        ${s.category || s.prep_note ? `<span class="meta">${[s.category, s.prep_note ? `❄️ ${s.prep_note}` : null].filter((x): x is string => Boolean(x)).map(esc).join(" · ")}</span>` : ""}
+      </div>
     </label>
     <span class="row-right">
-      ${s.category ? `<span class="meta">${esc(s.category)}</span>` : ""}
       <button class="del" data-del="/familia/compra/${s.id}/borrar" title="Borrar">✕</button>
     </span>
   </li>`;
@@ -1013,13 +1015,14 @@ export async function renderCompraPage(env: Env): Promise<string> {
     "compra",
     "🛒",
     `Lista de la compra (${shoppingPending.length} pendiente${shoppingPending.length === 1 ? "" : "s"})`,
-    `<ul class="chores">${shopping.length ? shopping.map(shoppingItem).join("") : `<li class="empty-row">La lista está vacía.</li>`}</ul>
+    `<ul class="chores rem-list">${shopping.length ? shopping.map(shoppingItem).join("") : `<li class="empty-row">La lista está vacía.</li>`}</ul>
      <form class="add-form" method="post" action="/familia/compra">
        <input type="text" name="nombre" placeholder="Nuevo producto…" required>
+       <input type="text" name="cantidad" placeholder="Cantidad (ej. 1 kg)">
        <input type="text" name="categoria" placeholder="Categoría (opcional)">
        <button type="submit">+ Agregar</button>
      </form>
-     <p class="soon-note">🔜 Próximamente: se llena sola con lo que falte según el menú semanal.</p>`,
+     <p class="soon-note">Pídele al bot "arma la lista de compras de la semana" — calcula cantidades según el menú y cuántos son, y te dice qué picar y congelar para que no se dañe.</p>`,
     "amber",
   );
   return layout(env, "Compra", "compra", body);

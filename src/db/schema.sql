@@ -413,6 +413,8 @@ CREATE TABLE IF NOT EXISTS shopping_items (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   category TEXT,
+  quantity TEXT,
+  prep_note TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   added_by TEXT,
   created_at INTEGER NOT NULL,

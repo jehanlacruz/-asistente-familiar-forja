@@ -3,7 +3,9 @@
 // que forjabot update NUNCA la toca. Se cargan desde member/tools.local.ts.
 import { tool } from "ai";
 import { z } from "zod";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import type { MemberToolCtx } from "../src/tools/member";
+import { resolveProvider } from "../src/llm/provider";
 import {
   db,
   newId,
@@ -484,28 +486,74 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const insertShoppingItem = async (nombre: string, categoria: string | null, cantidad: string | null, notaConservacion: string | null, senderId: string | null): Promise<{ ok: true } | { error: string }> => {
+    const existing = await d.first<{ id: string }>(
+      "SELECT id FROM shopping_items WHERE status = 'pending' AND lower(name) = lower(?)",
+      [nombre],
+    );
+    if (existing) return { error: `"${nombre}" ya está en la lista.` };
+    const now = Date.now();
+    await d.run(
+      `INSERT INTO shopping_items (id, name, category, quantity, prep_note, status, added_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+      [newId(), nombre, categoria, cantidad, notaConservacion, senderId, now, now],
+    );
+    return { ok: true };
+  };
+
   const agregarProductoCompra = tool({
     description: "Agrega un producto a la lista de la compra de la casa.",
     inputSchema: z.object({
       nombre: z.string(),
       categoria: z.string().optional().describe("ej. 'lácteos', 'limpieza', 'frutas'"),
+      cantidad: z
+        .string()
+        .optional()
+        .describe(
+          "Cuánto comprar — calcúlalo con la receta/menú de la semana y cuántas personas son (consultarMenuDia + consultarPerfilNutricionalFamilia), ej. '1.2 kg', '6 unidades', '2 litros'. No lo dejes vacío si ya sabes para cuántas porciones es.",
+        ),
+      notaConservacion: z
+        .string()
+        .optional()
+        .describe(
+          "Si es carne o verdura que no se va a usar toda de inmediato, indica cómo conservarla para evitar que se dañe, ej. 'picar y congelar en porciones de 2 personas', 'lavar, picar y congelar en bolsas de 250g'.",
+        ),
     }),
-    execute: async ({ nombre, categoria }) => {
-      const existing = await d.first<{ id: string }>(
-        "SELECT id FROM shopping_items WHERE status = 'pending' AND lower(name) = lower(?)",
-        [nombre],
-      );
-      if (existing) return { error: `"${nombre}" ya está en la lista.` };
+    execute: async ({ nombre, categoria, cantidad, notaConservacion }) => {
       const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
       const sender = senderChatId ? await findMemberByChatId(d, senderChatId) : null;
-      const now = Date.now();
-      const id = newId();
-      await d.run(
-        `INSERT INTO shopping_items (id, name, category, status, added_by, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
-        [id, nombre, categoria ?? null, sender?.id ?? null, now, now],
-      );
-      return { ok: true, mensaje: `"${nombre}" agregado a la lista de la compra.` };
+      const result = await insertShoppingItem(nombre, categoria ?? null, cantidad ?? null, notaConservacion ?? null, sender?.id ?? null);
+      if ("error" in result) return result;
+      return { ok: true, mensaje: `"${nombre}"${cantidad ? ` (${cantidad})` : ""} agregado a la lista de la compra.` };
+    },
+  });
+
+  const agregarVariosProductosCompra = tool({
+    description:
+      "Agrega VARIOS productos a la lista de la compra en una sola llamada — úsala SIEMPRE que armes la lista de compras de la semana a partir del menú (varios productos de un jalón), en vez de llamar agregarProductoCompra varias veces seguidas (eso corta la respuesta a la mitad).",
+    inputSchema: z.object({
+      productos: z
+        .array(
+          z.object({
+            nombre: z.string(),
+            categoria: z.string().optional(),
+            cantidad: z.string().optional().describe("Calculada según receta/menú y número de personas, ej. '1.2 kg', '6 unidades'"),
+            notaConservacion: z.string().optional().describe("Cómo picar/congelar carnes o verduras que no se usarán todas de inmediato"),
+          }),
+        )
+        .min(1),
+    }),
+    execute: async ({ productos }) => {
+      const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const sender = senderChatId ? await findMemberByChatId(d, senderChatId) : null;
+      const agregados: string[] = [];
+      const repetidos: string[] = [];
+      for (const p of productos) {
+        const result = await insertShoppingItem(p.nombre, p.categoria ?? null, p.cantidad ?? null, p.notaConservacion ?? null, sender?.id ?? null);
+        if ("error" in result) repetidos.push(p.nombre);
+        else agregados.push(p.nombre);
+      }
+      return { ok: true, agregados, repetidos: repetidos.length ? repetidos : undefined };
     },
   });
 
@@ -513,13 +561,20 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     description: "Lista la lista de la compra: lo que falta comprar y, si se pide, también lo ya comprado.",
     inputSchema: z.object({ incluirComprados: z.boolean().optional().default(false) }),
     execute: async ({ incluirComprados }) => {
-      const rows = await d.all<{ id: string; name: string; category: string | null; status: string }>(
+      const rows = await d.all<{ id: string; name: string; category: string | null; quantity: string | null; prep_note: string | null; status: string }>(
         incluirComprados
-          ? "SELECT id, name, category, status FROM shopping_items ORDER BY status ASC, created_at ASC"
-          : "SELECT id, name, category, status FROM shopping_items WHERE status = 'pending' ORDER BY created_at ASC",
+          ? "SELECT id, name, category, quantity, prep_note, status FROM shopping_items ORDER BY status ASC, created_at ASC"
+          : "SELECT id, name, category, quantity, prep_note, status FROM shopping_items WHERE status = 'pending' ORDER BY created_at ASC",
       );
       return {
-        productos: rows.map((r) => ({ id: r.id, nombre: r.name, categoria: r.category, comprado: r.status === "bought" })),
+        productos: rows.map((r) => ({
+          id: r.id,
+          nombre: r.name,
+          categoria: r.category,
+          cantidad: r.quantity,
+          notaConservacion: r.prep_note,
+          comprado: r.status === "bought",
+        })),
       };
     },
   });
@@ -1261,7 +1316,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
-  return {
+  const baseTools: Record<string, unknown> = {
     registrarIntegranteFamilia,
     generarEnlaceInvitacion,
     generarEnlaceAccesoWeb,
@@ -1277,6 +1332,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     listarRecordatorios,
     cancelarRecordatorio,
     agregarProductoCompra,
+    agregarVariosProductosCompra,
     listarListaCompra,
     marcarProductoComprado,
     definirMenuDia,
@@ -1304,4 +1360,17 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     listarFondosFinancieros,
     unirseConEnlace,
   };
+
+  // Búsqueda web real (precios/ofertas de super, etc.) — usa el tool nativo de
+  // Anthropic (web_search), corre server-side con la misma ANTHROPIC_API_KEY,
+  // sin necesitar otra llave. Solo aplica si el proveedor activo es Anthropic.
+  if (resolveProvider(ctx.env) === "anthropic" && ctx.env.ANTHROPIC_API_KEY) {
+    const anthropicProvider = createAnthropic({ apiKey: ctx.env.ANTHROPIC_API_KEY });
+    baseTools.buscarEnInternet = anthropicProvider.tools.webSearch_20260209({
+      maxUses: 5,
+      userLocation: { type: "approximate", country: "DE", timezone: ctx.env.BOT_TIMEZONE || "Europe/Berlin" },
+    });
+  }
+
+  return baseTools;
 }
