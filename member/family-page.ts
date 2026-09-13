@@ -1238,9 +1238,9 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
 
 function twoBarChart(cur: string, label1: string, v1: number, label2: string, v2: number, fmt: (n: number) => string): string {
   const max = Math.max(v1, v2, 1);
-  return `<div class="chart-bars">
-    <div class="chart-row"><span class="chart-label">${esc(label1)}</span><div class="chart-track"><div class="chart-fill" style="width:${Math.max(2, Math.round((v1 / max) * 100))}%"></div></div><span class="chart-value">${fmt(v1)}</span></div>
-    <div class="chart-row"><span class="chart-label">${esc(label2)}</span><div class="chart-track"><div class="chart-fill in" style="width:${Math.max(2, Math.round((v2 / max) * 100))}%"></div></div><span class="chart-value">${fmt(v2)}</span></div>
+  return `<div class="chart-bars chart-bars-wide">
+    <div class="chart-row"><span class="chart-label" title="${esc(label1)}">${esc(label1)}</span><div class="chart-track"><div class="chart-fill" style="width:${Math.max(2, Math.round((v1 / max) * 100))}%"></div></div><span class="chart-value">${fmt(v1)}</span></div>
+    <div class="chart-row"><span class="chart-label" title="${esc(label2)}">${esc(label2)}</span><div class="chart-track"><div class="chart-fill in" style="width:${Math.max(2, Math.round((v2 / max) * 100))}%"></div></div><span class="chart-value">${fmt(v2)}</span></div>
   </div>`;
 }
 
@@ -1573,6 +1573,7 @@ const SHARED_STYLE = `
   .chart-bars { display:flex; flex-direction:column; gap:10px; margin-top:14px; }
   .io-chart { margin-top:16px; }
   .chart-row { display:grid; grid-template-columns:84px 1fr 74px; align-items:center; gap:10px; }
+  .chart-bars-wide .chart-row { grid-template-columns:126px 1fr 74px; }
   .chart-label { font-size:.82rem; color:#6b7280; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chart-track { height:10px; border-radius:999px; background:#f0f0f3; overflow:hidden; }
   .chart-fill { height:100%; border-radius:999px; background:#2b6e63; }
