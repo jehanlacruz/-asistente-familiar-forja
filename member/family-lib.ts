@@ -66,6 +66,7 @@ export interface FinanceFund {
   percentage: number | null;
   monthly_target: number | null;
   notes: string | null;
+  is_subscription: number;
   created_at: number;
   updated_at: number;
 }

@@ -421,12 +421,13 @@ export async function setFundFromForm(env: Env, form: Record<string, string>): P
   if (!nombre) return;
   const porcentaje = form.porcentaje ? Number(form.porcentaje) : null;
   const montoMensual = form.montoMensual ? Number(form.montoMensual) : null;
+  const esSuscripcion = form.esSuscripcion === "1" ? 1 : 0;
   const now = Date.now();
   await db(env).run(
-    `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, updated_at = excluded.updated_at`,
-    [newId(), nombre, tipo, porcentaje, montoMensual, null, now, now],
+    `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, is_subscription, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, is_subscription = excluded.is_subscription, updated_at = excluded.updated_at`,
+    [newId(), nombre, tipo, porcentaje, montoMensual, null, esSuscripcion, now, now],
   );
 }
 
@@ -1130,7 +1131,7 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
     const pct = target ? Math.min(100, Math.round((saldo / target) * 100)) : null;
     return `<div class="budget-row">
       <div class="budget-head">
-        <b>${esc(f.name)} <span class="meta">(${FUND_KIND_LABEL[f.kind] ?? f.kind}${f.kind === "porcentaje" ? ` ${f.percentage}%` : ""})</span></b>
+        <b>${esc(f.name)} <span class="meta">(${FUND_KIND_LABEL[f.kind] ?? f.kind}${f.kind === "porcentaje" ? ` ${f.percentage}%` : ""})</span></b>${f.is_subscription ? ` <span class="badge managed">📱 suscripción</span>` : ""}
         <span class="row-right">
           <span class="${saldo < 0 ? "over" : ""}">${saldo.toFixed(2)}${cur}${target ? ` / ${target.toFixed(2)}${cur}` : ""}</span>
           <button class="del" data-del="/familia/fondo/${f.id}/borrar" title="Borrar">✕</button>
@@ -1180,6 +1181,21 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
         .join("")}</div>`
     : `<p class="empty-row">Sin gastos este mes todavía.</p>`;
 
+  const subscriptions = fijos.filter((x) => x.f.is_subscription);
+  const totalSuscripciones = subscriptions.reduce((s, x) => s + (x.f.monthly_target ?? 0), 0);
+  const maxSub = Math.max(...subscriptions.map((x) => x.f.monthly_target ?? 0), 1);
+  const subsChart = subscriptions.length
+    ? `<div class="chart-bars">${subscriptions
+        .map(
+          (x) => `<div class="chart-row" title="${esc(x.f.name)}: ${(x.f.monthly_target ?? 0).toFixed(2)}${cur}/mes">
+      <span class="chart-label">${esc(x.f.name)}</span>
+      <div class="chart-track"><div class="chart-fill" style="width:${Math.max(2, Math.round(((x.f.monthly_target ?? 0) / maxSub) * 100))}%"></div></div>
+      <span class="chart-value">${(x.f.monthly_target ?? 0).toFixed(2)}${cur}</span>
+    </div>`,
+        )
+        .join("")}</div>`
+    : `<p class="empty-row">Sin suscripciones registradas — pídele al bot: "tengo Netflix a 12.99 y ChatGPT a 20, márcalos como suscripción".</p>`;
+
   const body = `
     <section class="panel">
       <h2><span class="icon-badge tone-blue">💶</span>Este mes</h2>
@@ -1191,6 +1207,14 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       ${ioChart}
       <h3 class="chart-subtitle">Gastos por categoría</h3>
       ${catChart}
+    </section>
+    <section class="panel">
+      <h2><span class="icon-badge tone-blue">📱</span>Suscripciones y pagos recurrentes</h2>
+      <div class="menu-grid">
+        <div><span>Activas</span><b>${subscriptions.length}</b></div>
+        <div><span>Total al mes</span><b class="amount-out">${totalSuscripciones.toFixed(2)}${cur}</b></div>
+      </div>
+      ${subsChart}
     </section>
     <section class="panel">
       <h2><span class="icon-badge tone-blue">💰</span>Sobres / fondos</h2>
@@ -1205,6 +1229,7 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
         </select>
         <input type="number" step="0.1" name="porcentaje" placeholder="% (si aplica)">
         <input type="number" step="0.01" name="montoMensual" placeholder="Meta mensual (si aplica)">
+        <label class="chk"><input type="checkbox" name="esSuscripcion" value="1"> Es una suscripción/app (Netflix, ChatGPT, gimnasio…)</label>
         <button type="submit">+ Crear sobre</button>
       </form>
       <p class="soon-note">Al registrar un ingreso, se reparte solo: primero los % , luego los fijos hasta su meta del mes, el resto a ahorro.</p>

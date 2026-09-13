@@ -1010,6 +1010,10 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     tipo: z.enum(["porcentaje", "fijo", "ahorro"]),
     porcentaje: z.number().min(0).max(100).optional().describe("Requerido si tipo='porcentaje'"),
     montoMensual: z.number().positive().optional().describe("Requerido si tipo='fijo': meta mensual (ej. renta, comida)"),
+    esSuscripcion: z
+      .boolean()
+      .optional()
+      .describe("true si es una app/programa/membresía que se paga en mensualidad (ej. Netflix, Spotify, ChatGPT, gimnasio, software) — false o vacío para gastos fijos que NO son suscripciones (alquiler, luz, agua)."),
     notas: z.string().optional(),
   };
 
@@ -1018,12 +1022,12 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     if (input.tipo === "fijo" && input.montoMensual == null) return { error: `Falta el monto mensual para el sobre "${input.nombre}".` };
     const now = Date.now();
     await d.run(
-      `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, notes = excluded.notes, updated_at = excluded.updated_at`,
-      [newId(), input.nombre, input.tipo, input.porcentaje ?? null, input.montoMensual ?? null, input.notas ?? null, now, now],
+      `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, is_subscription, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, notes = excluded.notes, is_subscription = excluded.is_subscription, updated_at = excluded.updated_at`,
+      [newId(), input.nombre, input.tipo, input.porcentaje ?? null, input.montoMensual ?? null, input.notas ?? null, input.esSuscripcion ? 1 : 0, now, now],
     );
-    return { ok: true, mensaje: `Sobre "${input.nombre}" (${input.tipo}${input.tipo === "porcentaje" ? ` ${input.porcentaje}%` : input.tipo === "fijo" ? ` ${input.montoMensual}/mes` : ""}) guardado.` };
+    return { ok: true, mensaje: `Sobre "${input.nombre}" (${input.tipo}${input.tipo === "porcentaje" ? ` ${input.porcentaje}%` : input.tipo === "fijo" ? ` ${input.montoMensual}/mes` : ""}${input.esSuscripcion ? " · suscripción" : ""}) guardado.` };
   };
 
   const definirFondoFinanciero = tool({
@@ -1183,6 +1187,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
           tipo: f.kind,
           porcentaje: f.percentage,
           metaMensual: f.monthly_target,
+          esSuscripcion: !!f.is_subscription,
           saldoActual: await fundBalance(d, f.id),
           notas: f.notes,
         });

@@ -519,6 +519,7 @@ CREATE TABLE IF NOT EXISTS finance_funds (
   percentage REAL,
   monthly_target REAL,
   notes TEXT,
+  is_subscription INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
