@@ -653,7 +653,7 @@ function memberCard(m: FamilyMember, viewer: FamilyMember | null): string {
   const edad = ageFromBirthdate(m.birthdate);
   const bmi = canSeeHealth ? bmiInfo(m.weight_kg, m.height_cm) : null;
   const rows: string[] = [];
-  if (edad != null) rows.push(`<div class="row"><span>Edad</span><b>${edad} años</b></div>`);
+  if (edad != null) rows.push(`<div class="row"><span>Edad</span><b>${edad} año${edad === 1 ? "" : "s"}</b></div>`);
   if (canSeeHealth && m.weight_kg) rows.push(`<div class="row"><span>Peso</span><b>${m.weight_kg} kg</b></div>`);
   if (canSeeHealth && m.height_cm) rows.push(`<div class="row"><span>Estatura</span><b>${m.height_cm} cm</b></div>`);
   if (bmi) rows.push(`<div class="row"><span>IMC</span><b>${bmi.bmi} · ${esc(bmi.category)}</b></div>`);
@@ -718,6 +718,25 @@ function addChoreForm(members: FamilyMember[], kind: "diaria" | "puntual", categ
     ${kind === "puntual" ? `<input type="date" name="fecha">` : ""}
     <button type="submit">+ Agregar</button>
   </form>`;
+}
+
+function groupedChoreList(list: { c: Chore; pending: boolean }[], nameById: Map<string, string>, emptyMsg: string): string {
+  if (!list.length) return `<p class="empty-row">${esc(emptyMsg)}</p>`;
+  const byMember = new Map<string, { c: Chore; pending: boolean }[]>();
+  const unassigned: { c: Chore; pending: boolean }[] = [];
+  for (const x of list) {
+    if (x.c.assigned_to) {
+      if (!byMember.has(x.c.assigned_to)) byMember.set(x.c.assigned_to, []);
+      byMember.get(x.c.assigned_to)!.push(x);
+    } else {
+      unassigned.push(x);
+    }
+  }
+  const blocks = Array.from(byMember.entries())
+    .map(([id, items]) => `<div class="assignee-block"><h4>${esc(nameById.get(id) ?? "?")}</h4>${choreList(items, nameById, "", true)}</div>`)
+    .join("");
+  const unassignedHtml = unassigned.length ? `<div class="assignee-block"><h4>Sin asignar</h4>${choreList(unassigned, nameById, "", true)}</div>` : "";
+  return blocks + unassignedHtml;
 }
 
 function choreList(list: { c: Chore; pending: boolean }[], nameById: Map<string, string>, emptyMsg: string, hideAssignee = false): string {
@@ -875,7 +894,7 @@ export async function renderEjercicioPage(env: Env): Promise<string> {
 
   const body = `
     <div class="grid">${members.map(planCard).join("") || `<div class="card">Todavía no hay integrantes.</div>`}</div>
-    ${section("ejercicio", "🏃", "Sesiones de esta semana", choreList(ejercicio, nameById, "Sin rutinas registradas todavía.") + addChoreForm(members, "puntual", "ejercicio"))}
+    ${section("ejercicio", "🏃", "Sesiones de esta semana", groupedChoreList(ejercicio, nameById, "Sin rutinas registradas todavía.") + addChoreForm(members, "puntual", "ejercicio"))}
     <p class="soon-note">Para un plan personalizado (nivel, tiempo disponible, lesiones), pídeselo al bot por chat: "arma mi rutina de ejercicio" — usa tu perfil físico, editable en Integrantes.</p>
   `;
   return layout(env, "Ejercicio", "ejercicio", body);
@@ -1311,7 +1330,7 @@ export async function renderNinosPage(env: Env): Promise<string> {
     const edad = ageFromBirthdate(m.birthdate);
     return `<div class="card">
       <div class="card-head"><h3>${esc(m.name)}</h3></div>
-      <div class="role">${edad != null ? `${edad} años` : ""}</div>
+      <div class="role" style="text-transform:none">${edad != null ? `${edad} año${edad === 1 ? "" : "s"}` : ""}</div>
       ${m.interests ? `<div class="row"><span>Le gusta</span><b>${esc(m.interests)}</b></div>` : `<div class="empty">Sin intereses guardados</div>`}
       <a class="edit-link" href="/familia/integrante/${m.id}/editar">✏️ Editar</a>
     </div>`;
@@ -1464,8 +1483,9 @@ const SHARED_STYLE = `
   .card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .card-head h3 { margin:0; font-size:1.02rem; }
   .role { color:#6b7280; font-size:.82rem; margin:2px 0 10px; text-transform:capitalize; }
-  .row { display:flex; justify-content:space-between; font-size:.85rem; padding:3px 0; }
-  .row span { color:#6b7280; }
+  .row { display:flex; justify-content:space-between; gap:10px; font-size:.85rem; padding:3px 0; }
+  .row span { color:var(--ink-soft); flex:none; white-space:nowrap; }
+  .row b { flex:1 1 auto; min-width:0; text-align:right; overflow-wrap:break-word; }
   .empty, .empty-row { color:#9aa0b4; font-size:.85rem; }
   .badge { font-size:.68rem; padding:3px 8px; border-radius:999px; white-space:nowrap; }
   .badge.ok { background:#dcfce7; color:#16a34a; }
@@ -1486,7 +1506,9 @@ const SHARED_STYLE = `
   .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:18px; margin-bottom:16px; scroll-margin-top:56px; box-shadow:var(--shadow-sm); }
   .panel h2 { margin:0 0 12px; font-size:1.02rem; }
   ul.chores { list-style:none; margin:0; padding:0; }
-  ul.chores li { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:1px solid #f0f0f3; font-size:.92rem; }
+  ul.chores li { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:1px solid #f0f0f3; font-size:.92rem; }
+  ul.chores li label { padding-top:1px; }
+  ul.chores li .row-right { padding-top:1px; }
   ul.chores li:last-child { border-bottom:none; }
   ul.chores label { display:flex; align-items:center; gap:10px; cursor:pointer; flex:1; min-width:0; }
   ul.chores input[type=checkbox] { width:19px; height:19px; accent-color:#2b6e63; flex:none; }
@@ -1526,7 +1548,9 @@ const SHARED_STYLE = `
   .assignee-block h4 { margin:0 0 4px; font-size:.85rem; color:#2b6e63; }
   .menu-form { display:flex; flex-direction:column; gap:10px; }
   .menu-form label { display:flex; flex-direction:column; gap:4px; font-size:.78rem; color:#9aa0b4; }
-  .menu-form input { border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; font-size:.9rem; color:#1a1f3c; }
+  .menu-form input { border:1px solid var(--border); border-radius:var(--radius-sm); padding:8px 10px; font-size:.9rem; color:var(--ink); }
+  .menu-form button { align-self:flex-start; border:none; background:var(--accent); color:#fff; border-radius:var(--radius-sm); padding:9px 18px; font-size:.88rem; font-weight:600; cursor:pointer; transition:background .15s ease; }
+  .menu-form button:hover { background:var(--accent-dark); }
   .field { display:flex; flex-direction:column; gap:4px; font-size:.78rem; color:#9aa0b4; margin-bottom:12px; }
   .field input, .field select { padding:9px 10px; font-size:.92rem; color:#1a1f3c; border:1px solid #e5e7eb; border-radius:8px; }
   .chk { display:flex; align-items:center; gap:8px; font-size:.88rem; margin-bottom:14px; }
