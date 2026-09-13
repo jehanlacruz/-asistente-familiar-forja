@@ -1611,13 +1611,17 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
   // Búsqueda web real (precios/ofertas de super, etc.) — usa el tool nativo de
   // Anthropic (web_search), corre server-side con la misma ANTHROPIC_API_KEY,
   // sin necesitar otra llave. Solo aplica si el proveedor activo es Anthropic.
-  if (resolveProvider(ctx.env) === "anthropic" && ctx.env.ANTHROPIC_API_KEY) {
-    const anthropicProvider = createAnthropic({ apiKey: ctx.env.ANTHROPIC_API_KEY });
-    baseTools.buscarEnInternet = anthropicProvider.tools.webSearch_20260209({
-      maxUses: 5,
-      userLocation: { type: "approximate", country: "DE", timezone: ctx.env.BOT_TIMEZONE || "Europe/Berlin" },
-    });
-  }
+  // DESACTIVADO TEMPORALMENTE (2026-09-13): sospecha de que este tool está
+  // rompiendo TODAS las respuestas del bot (no solo búsquedas) — si Anthropic
+  // rechaza la definición del tool, rechaza el turno completo. Revisar antes
+  // de reactivar.
+  // if (resolveProvider(ctx.env) === "anthropic" && ctx.env.ANTHROPIC_API_KEY) {
+  //   const anthropicProvider = createAnthropic({ apiKey: ctx.env.ANTHROPIC_API_KEY });
+  //   baseTools.buscarEnInternet = anthropicProvider.tools.webSearch_20260209({
+  //     maxUses: 5,
+  //     userLocation: { type: "approximate", country: "DE", timezone: ctx.env.BOT_TIMEZONE || "Europe/Berlin" },
+  //   });
+  // }
 
   return baseTools;
 }

@@ -1502,7 +1502,9 @@ export async function renderNinosPage(env: Env): Promise<string> {
   const d = db(env);
   const members = await listMembers(d);
   const nameById = new Map(members.map((m) => [m.id, m.name]));
-  const kids = members.filter((m) => m.access_level === "managed");
+  // Un niño con acceso completo (chatea directo) sigue siendo un niño — no
+  // asumas la edad por el tipo de acceso, calcúlala del cumpleaños real.
+  const kids = members.filter((m) => m.access_level === "managed" || (ageFromBirthdate(m.birthdate) ?? 99) < 18);
   const activities = await d.all<FamilyActivity>("SELECT * FROM family_activities ORDER BY is_favorite DESC, created_at DESC");
 
   const kidCard = (m: FamilyMember) => {
