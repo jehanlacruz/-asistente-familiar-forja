@@ -636,6 +636,8 @@ const GOAL_LABEL: Record<string, string> = {
   mantener: "Mantenerse",
   ganar_musculo: "Ganar músculo",
   comer_mas_sano: "Comer más sano",
+  alto_proteina: "Alto en proteína",
+  ayuno_intermitente: "Ayuno intermitente",
 };
 
 function goalOptions(selected: string | null | undefined): string {

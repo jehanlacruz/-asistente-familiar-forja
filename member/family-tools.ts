@@ -120,7 +120,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       nacionalidad: z.string().optional(),
       alergias: z.string().optional().describe("Alergias o restricciones alimentarias, ej. 'lactosa, frutos secos'"),
       objetivoNutricional: z
-        .enum(["bajar_peso", "mantener", "ganar_musculo", "comer_mas_sano"])
+        .enum(["bajar_peso", "mantener", "ganar_musculo", "comer_mas_sano", "alto_proteina", "ayuno_intermitente"])
         .optional()
         .describe("Objetivo para el menú/ejercicio de este integrante"),
       nivelFisico: z.enum(["bajo", "medio", "alto"]).optional().describe("Nivel actual de condición física"),
@@ -273,7 +273,7 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
       nacionalidad: z.string().optional(),
       preferenciasComida: z.string().optional().describe("Platillos o gustos de comida"),
       alergias: z.string().optional().describe("Alergias o restricciones alimentarias"),
-      objetivoNutricional: z.enum(["bajar_peso", "mantener", "ganar_musculo", "comer_mas_sano"]).optional(),
+      objetivoNutricional: z.enum(["bajar_peso", "mantener", "ganar_musculo", "comer_mas_sano", "alto_proteina", "ayuno_intermitente"]).optional(),
       nivelFisico: z.enum(["bajo", "medio", "alto"]).optional(),
       tiempoDisponible: z.string().optional().describe("ej. '3 veces por semana, 30 min'"),
       lesiones: z.string().optional(),
