@@ -698,9 +698,9 @@ function choreItem(c: Chore, pending: boolean, assignee: string | null, hideAssi
   </li>`;
 }
 
-function section(id: string, icon: string, title: string, bodyHtml: string): string {
+function section(id: string, icon: string, title: string, bodyHtml: string, tone = "green"): string {
   return `<section id="${id}" class="panel">
-    <h2>${icon} ${esc(title)}</h2>
+    <h2><span class="icon-badge tone-${tone}">${icon}</span>${esc(title)}</h2>
     ${bodyHtml}
   </section>`;
 }
@@ -904,7 +904,7 @@ export async function renderEjercicioPage(env: Env): Promise<string> {
 
   const body = `
     <div class="grid">${members.map(planCard).join("") || `<div class="card">Todavía no hay integrantes.</div>`}</div>
-    ${section("ejercicio", "🏃", "Sesiones de esta semana", groupedChoreList(ejercicio, nameById, "Sin rutinas registradas todavía.") + addChoreForm(members, "puntual", "ejercicio"))}
+    ${section("ejercicio", "🏃", "Sesiones de esta semana", groupedChoreList(ejercicio, nameById, "Sin rutinas registradas todavía.") + addChoreForm(members, "puntual", "ejercicio"), "orange")}
     <p class="soon-note">Para un plan personalizado (nivel, tiempo disponible, lesiones), pídeselo al bot por chat: "arma mi rutina de ejercicio" — usa tu perfil físico, editable en Integrantes.</p>
   `;
   return layout(env, "Ejercicio", "ejercicio", body);
@@ -966,7 +966,7 @@ export async function renderMenuPage(env: Env): Promise<string> {
 
   const body = `
     <section class="panel">
-      <h2>✏️ Editar menú de hoy (rápido)</h2>
+      <h2><span class="icon-badge tone-rose">✏️</span>Editar menú de hoy (rápido)</h2>
       <form class="menu-form" method="post" action="/familia/menu">
         <label>Desayuno<input type="text" name="desayuno" value="${esc(todayRow?.breakfast || "")}"></label>
         <label>Comida<input type="text" name="comida" value="${esc(todayRow?.lunch || "")}"></label>
@@ -976,7 +976,7 @@ export async function renderMenuPage(env: Env): Promise<string> {
       <p class="soon-note">Para ingredientes y receta paso a paso pídeselo al bot por chat: "arma el menú de la semana" — usa los gustos, alergias y objetivo de cada integrante.</p>
     </section>
     <section class="panel">
-      <h2>📅 Semana</h2>
+      <h2><span class="icon-badge tone-rose">📅</span>Semana</h2>
       <div class="week-grid">${weekDates.map((date, i) => dayCard(date, i)).join("")}</div>
     </section>`;
   return layout(env, "Menú", "menu", body);
@@ -1011,6 +1011,7 @@ export async function renderCompraPage(env: Env): Promise<string> {
        <button type="submit">+ Agregar</button>
      </form>
      <p class="soon-note">🔜 Próximamente: se llena sola con lo que falte según el menú semanal.</p>`,
+    "amber",
   );
   return layout(env, "Compra", "compra", body);
 }
@@ -1033,7 +1034,7 @@ export async function renderRecordatoriosPage(env: Env): Promise<string> {
   </li>`;
 
   const body = `<section class="panel">
-    <h2>⏰ Próximos recordatorios</h2>
+    <h2><span class="icon-badge tone-red">⏰</span>Próximos recordatorios</h2>
     <ul class="chores rem-list">${rows.length ? rows.map(item).join("") : `<li class="empty-row">No hay recordatorios programados.</li>`}</ul>
     <form class="add-form rem-form" method="post" action="/familia/recordatorio">
       <input type="text" name="titulo" placeholder="¿Qué hay que recordar?" required>
@@ -1167,7 +1168,7 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
 
   const body = `
     <section class="panel">
-      <h2>💶 Este mes</h2>
+      <h2><span class="icon-badge tone-blue">💶</span>Este mes</h2>
       <div class="menu-grid">
         <div><span>Ingresos</span><b>${totalIngresos.toFixed(2)}${cur}</b></div>
         <div><span>Gastos</span><b>${totalGastos.toFixed(2)}${cur}</b></div>
@@ -1178,7 +1179,7 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       ${catChart}
     </section>
     <section class="panel">
-      <h2>💰 Sobres / fondos</h2>
+      <h2><span class="icon-badge tone-blue">💰</span>Sobres / fondos</h2>
       ${resultadosHtml}
       ${fundsHtml}
       <form class="add-form" method="post" action="/familia/fondo">
@@ -1195,7 +1196,7 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       <p class="soon-note">Al registrar un ingreso, se reparte solo: primero los % , luego los fijos hasta su meta del mes, el resto a ahorro.</p>
     </section>
     <section class="panel">
-      <h2>🎯 Presupuestos simples</h2>
+      <h2><span class="icon-badge tone-blue">🎯</span>Presupuestos simples</h2>
       ${budgets.length ? budgets.map(budgetRow).join("") : `<p class="empty-row">Sin presupuestos definidos todavía.</p>`}
       <form class="add-form" method="post" action="/familia/presupuesto">
         <input type="text" name="categoria" placeholder="Categoría (o 'Total')" required>
@@ -1204,15 +1205,15 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       </form>
     </section>
     <section class="panel">
-      <h2>🔺 Ingresos del mes</h2>
+      <h2><span class="icon-badge tone-blue">🔺</span>Ingresos del mes</h2>
       <ul class="chores rem-list">${ingresos.length ? ingresos.map(txRow).join("") : `<li class="empty-row">Sin ingresos este mes.</li>`}</ul>
     </section>
     <section class="panel">
-      <h2>📅 Gastos fijos del mes</h2>
+      <h2><span class="icon-badge tone-blue">📅</span>Gastos fijos del mes</h2>
       <ul class="chores rem-list">${gastosFijos.length ? gastosFijos.map(txRow).join("") : `<li class="empty-row">Sin gastos fijos registrados este mes.</li>`}</ul>
     </section>
     <section class="panel">
-      <h2>🛍️ Gastos diarios del mes</h2>
+      <h2><span class="icon-badge tone-blue">🛍️</span>Gastos diarios del mes</h2>
       <ul class="chores rem-list">${gastosDiarios.length ? gastosDiarios.map(txRow).join("") : `<li class="empty-row">Sin gastos variables este mes.</li>`}</ul>
       <form class="add-form" method="post" action="/familia/transaccion">
         <select name="tipo"><option value="gasto">Gasto</option><option value="ingreso">Ingreso</option></select>
@@ -1287,7 +1288,7 @@ export async function renderCreditosPage(env: Env, query: Record<string, string>
 
   const body = `
     <section class="panel">
-      <h2>💳 Créditos y préstamos</h2>
+      <h2><span class="icon-badge tone-cyan">💳</span>Créditos y préstamos</h2>
       ${debtsHtml}
       <form class="add-form" method="post" action="/familia/deuda">
         <input type="text" name="nombre" placeholder="Nombre (ej. Tarjeta)" required>
@@ -1300,7 +1301,7 @@ export async function renderCreditosPage(env: Env, query: Record<string, string>
     ${
       debts.length
         ? `<section class="panel">
-      <h2>🔮 Simulador: "¿qué pasa si...?"</h2>
+      <h2><span class="icon-badge tone-cyan">🔮</span>Simulador: "¿qué pasa si...?"</h2>
       <form method="get" action="/familia/creditos" class="add-form">
         <select name="deuda">${debtOptions}</select>
         <input type="number" step="0.01" name="extra" placeholder="Pagar más al mes (opcional)" value="${esc(query.extra || "")}">
@@ -1348,11 +1349,11 @@ export async function renderNinosPage(env: Env): Promise<string> {
 
   const body = `
     <section class="panel">
-      <h2>🧸 Niños</h2>
+      <h2><span class="icon-badge tone-yellow">🧸</span>Niños</h2>
       <div class="grid">${kids.map(kidCard).join("") || `<div class="card">No hay integrantes marcados como "acceso gestionado" (niños) todavía.</div>`}</div>
     </section>
     <section class="panel">
-      <h2>🎲 Actividades familiares</h2>
+      <h2><span class="icon-badge tone-yellow">🎲</span>Actividades familiares</h2>
       <ul class="chores">${activities.length ? activities.map((a) => activityItem(a, a.for_member ? nameById.get(a.for_member) ?? null : null)).join("") : `<li class="empty-row">Sin actividades guardadas — pídele al bot ideas: "actividades para el fin de semana con Aday".</li>`}</ul>
       <form class="add-form" method="post" action="/familia/actividad">
         <input type="text" name="titulo" placeholder="Nueva actividad…" required>
@@ -1451,14 +1452,15 @@ const SHARED_STYLE = `
     .nav-ic, .brand-badge { background:#1c2b28 !important; }
     .hub-card:hover { box-shadow:0 10px 28px rgba(0,0,0,.4) !important; }
     .hero-eyebrow { color:#9aa0b4 !important; }
-    .hub-icon.tone-green { background:#123524 !important; color:#4ade80 !important; }
-    .hub-icon.tone-amber { background:#3a2a0a !important; color:#fbbf24 !important; }
-    .hub-icon.tone-rose { background:#3a1626 !important; color:#f472b6 !important; }
-    .hub-icon.tone-orange { background:#3a1f0a !important; color:#fb923c !important; }
-    .hub-icon.tone-red { background:#3a1414 !important; color:#f87171 !important; }
-    .hub-icon.tone-blue { background:#122a4a !important; color:#60a5fa !important; }
-    .hub-icon.tone-yellow { background:#3a330a !important; color:#fde047 !important; }
-    .hub-icon.tone-violet { background:#241a3a !important; color:#c4b5fd !important; }
+    .hub-icon.tone-green, .icon-badge.tone-green { background:#123524 !important; color:#4ade80 !important; }
+    .hub-icon.tone-amber, .icon-badge.tone-amber { background:#3a2a0a !important; color:#fbbf24 !important; }
+    .hub-icon.tone-rose, .icon-badge.tone-rose { background:#3a1626 !important; color:#f472b6 !important; }
+    .hub-icon.tone-orange, .icon-badge.tone-orange { background:#3a1f0a !important; color:#fb923c !important; }
+    .hub-icon.tone-red, .icon-badge.tone-red { background:#3a1414 !important; color:#f87171 !important; }
+    .hub-icon.tone-blue, .icon-badge.tone-blue { background:#122a4a !important; color:#60a5fa !important; }
+    .hub-icon.tone-yellow, .icon-badge.tone-yellow { background:#3a330a !important; color:#fde047 !important; }
+    .hub-icon.tone-violet, .icon-badge.tone-violet { background:#241a3a !important; color:#c4b5fd !important; }
+    .hub-icon.tone-cyan, .icon-badge.tone-cyan { background:#0b2e36 !important; color:#22d3ee !important; }
   }
   header { padding:26px 20px 16px; text-align:center; background:linear-gradient(180deg,#fff,#f3f4f8); }
   .brand { display:inline-flex; align-items:center; gap:12px; }
@@ -1478,14 +1480,16 @@ const SHARED_STYLE = `
   .hub-card:hover { transform:translateY(-3px); box-shadow:var(--shadow-md); }
   .hub-icon { display:flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:12px; background:var(--accent-tint); font-size:1.3rem; margin-bottom:10px; transition:transform .15s ease; }
   .hub-card:hover .hub-icon { transform:scale(1.08) rotate(-4deg); }
-  .hub-icon.tone-green { background:#dcfce7; color:#16a34a; }
-  .hub-icon.tone-amber { background:#fef3c7; color:#b45309; }
-  .hub-icon.tone-rose { background:#fce7f3; color:#be185d; }
-  .hub-icon.tone-orange { background:#ffedd5; color:#c2410c; }
-  .hub-icon.tone-red { background:#fee2e2; color:#b91c1c; }
-  .hub-icon.tone-blue { background:#dbeafe; color:#1d4ed8; }
-  .hub-icon.tone-yellow { background:#fef9c3; color:#a16207; }
-  .hub-icon.tone-violet { background:#ede9fe; color:#6d28d9; }
+  .hub-icon.tone-green, .icon-badge.tone-green { background:#dcfce7; color:#16a34a; }
+  .hub-icon.tone-amber, .icon-badge.tone-amber { background:#fef3c7; color:#b45309; }
+  .hub-icon.tone-rose, .icon-badge.tone-rose { background:#fce7f3; color:#be185d; }
+  .hub-icon.tone-orange, .icon-badge.tone-orange { background:#ffedd5; color:#c2410c; }
+  .hub-icon.tone-red, .icon-badge.tone-red { background:#fee2e2; color:#b91c1c; }
+  .hub-icon.tone-blue, .icon-badge.tone-blue { background:#dbeafe; color:#1d4ed8; }
+  .hub-icon.tone-yellow, .icon-badge.tone-yellow { background:#fef9c3; color:#a16207; }
+  .hub-icon.tone-violet, .icon-badge.tone-violet { background:#ede9fe; color:#6d28d9; }
+  .hub-icon.tone-cyan, .icon-badge.tone-cyan { background:#cffafe; color:#0e7490; }
+  .icon-badge { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:9px; font-size:.95rem; margin-right:8px; flex:none; }
   .hub-card h3 { margin:0 0 4px; font-size:1rem; }
   .hub-card p { margin:0; font-size:.82rem; color:var(--ink-soft); }
   .hub-card.soon { opacity:.7; }
@@ -1535,7 +1539,7 @@ const SHARED_STYLE = `
   .add-member button, .add-form button { border:none; background:var(--accent); color:#fff; border-radius:var(--radius-sm); padding:8px 14px; font-size:.85rem; font-weight:600; cursor:pointer; transition:background .15s ease; }
   .add-member button:hover, .add-form button:hover { background:var(--accent-dark); }
   .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:18px; margin-bottom:16px; scroll-margin-top:56px; box-shadow:var(--shadow-sm); }
-  .panel h2 { margin:0 0 12px; font-size:1.02rem; }
+  .panel h2 { margin:0 0 12px; font-size:1.02rem; display:flex; align-items:center; }
   ul.chores { list-style:none; margin:0; padding:0; }
   ul.chores li { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:1px solid #f0f0f3; font-size:.92rem; }
   ul.chores li label { padding-top:1px; }
