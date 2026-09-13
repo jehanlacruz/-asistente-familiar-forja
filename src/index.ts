@@ -40,6 +40,9 @@ import {
   renderFinanzasPage,
   addTransactionFromForm,
   deleteTransaction,
+  updateTransactionFromForm,
+  renderEditTransactionPage,
+  currencySymbol,
   setBudgetFromForm,
   setFundFromForm,
   deleteFund,
@@ -74,7 +77,7 @@ import { applyBranding } from "./admin/branding";
 import { isOwner, handleOwnerMessage } from "./owner/handler";
 import { purgeOldMessages, purgeOldMedia, purgeOldTestChats } from "./crons/purgeOldMessages";
 import { runDueReminders } from "../member/reminders-cron";
-import { isAdminViewer, type FamilyMember } from "../member/family-lib";
+import { isAdminViewer, db as familyDb, type FamilyMember, type Transaction } from "../member/family-lib";
 import { reindexFixtures } from "./kb/reindex";
 import { widgetJs, widgetPreflight, webPoll, webSend } from "./web/rutas";
 import { analyzeConversations } from "./insights/analyzer";
@@ -714,6 +717,18 @@ app.post("/familia/transaccion/:id/borrar", async (c) => {
   const result = await deleteTransaction(c.env, c.req.param("id"), await currentViewer(c));
   if (!result.ok) return c.text(result.error, 403);
   return c.body(null, 204);
+});
+app.get("/familia/transaccion/:id/editar", async (c) => {
+  const d = familyDb(c.env);
+  const tx = await d.first<Transaction>("SELECT * FROM transactions WHERE id = ?", [c.req.param("id")]);
+  if (!tx) return c.html(`<p>Ese movimiento ya no existe.</p><a href="/familia/finanzas">Volver</a>`, 404);
+  return c.html(renderEditTransactionPage(c.env, tx, await currencySymbol(c.env)));
+});
+app.post("/familia/transaccion/:id", async (c) => {
+  const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+  const result = await updateTransactionFromForm(c.env, c.req.param("id"), form, await currentViewer(c));
+  if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/finanzas">Volver</a>`, 400);
+  return c.redirect("/familia/finanzas");
 });
 app.post("/familia/presupuesto", async (c) => {
   await setBudgetFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);

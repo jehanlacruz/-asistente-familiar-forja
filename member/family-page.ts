@@ -340,6 +340,66 @@ export async function deleteTransaction(env: Env, id: string, viewer: FamilyMemb
   return { ok: true };
 }
 
+export async function updateTransactionFromForm(
+  env: Env,
+  id: string,
+  form: Record<string, string>,
+  viewer: FamilyMember | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const d = db(env);
+  const current = await d.first<Transaction>("SELECT * FROM transactions WHERE id = ?", [id]);
+  if (!current) return { ok: false, error: "Esa transacción ya no existe." };
+  if (current.visibility === "privado" && !isAdminViewer(viewer) && current.member_id !== viewer?.id) {
+    return { ok: false, error: "Es una transacción privada de otra persona." };
+  }
+  const categoria = (form.categoria || "").trim();
+  const monto = Number(form.monto);
+  if (!categoria || !monto) return { ok: false, error: "Falta la categoría o el monto." };
+
+  let fundId: string | null = null;
+  if (form.tipo === "gasto") {
+    const fundName = form.fondo || categoria;
+    const fund = await d.first<{ id: string }>("SELECT id FROM finance_funds WHERE lower(name) = lower(?)", [fundName]);
+    fundId = fund?.id ?? null;
+  }
+
+  await d.run(
+    `UPDATE transactions SET type = ?, amount = ?, category = ?, description = ?, fund_id = ?, visibility = ?, date = ?, updated_at = ? WHERE id = ?`,
+    [
+      form.tipo === "ingreso" ? "ingreso" : "gasto",
+      monto,
+      categoria,
+      form.descripcion || null,
+      fundId,
+      form.privado === "1" ? "privado" : "compartido",
+      form.fecha || current.date,
+      Date.now(),
+      id,
+    ],
+  );
+  return { ok: true };
+}
+
+export function renderEditTransactionPage(env: Env, tx: Transaction, cur: string): string {
+  const body = `<section class="panel">
+    <h2>✏️ Editar movimiento</h2>
+    <form method="post" action="/familia/transaccion/${tx.id}">
+      <label class="field">Tipo<select name="tipo"><option value="gasto" ${tx.type === "gasto" ? "selected" : ""}>Gasto</option><option value="ingreso" ${tx.type === "ingreso" ? "selected" : ""}>Ingreso</option></select></label>
+      <label class="field">Monto (${esc(cur)})<input type="number" step="0.01" name="monto" value="${tx.amount}" required></label>
+      <label class="field">Categoría<input type="text" name="categoria" value="${esc(tx.category)}" required></label>
+      <label class="field">Descripción<input type="text" name="descripcion" value="${esc(tx.description ?? "")}"></label>
+      <label class="field">Sobre (si aplica)<input type="text" name="fondo" value=""></label>
+      <label class="field">Fecha<input type="date" name="fecha" value="${tx.date}"></label>
+      <label class="chk"><input type="checkbox" name="privado" value="1" ${tx.visibility === "privado" ? "checked" : ""}> Privado (solo yo y los admins)</label>
+      <div class="btn-row">
+        <button type="submit">Guardar cambios</button>
+        <a class="btn-secondary" href="/familia/finanzas">Cancelar</a>
+      </div>
+    </form>
+  </section>`;
+  return layout(env, "Editar movimiento", "finanzas", body);
+}
+
 export async function setBudgetFromForm(env: Env, form: Record<string, string>): Promise<void> {
   const categoria = (form.categoria || "").trim();
   const monto = Number(form.montoMensual);
@@ -935,7 +995,7 @@ export async function renderRecordatoriosPage(env: Env): Promise<string> {
   return layout(env, "Recordatorios", "recordatorios", body);
 }
 
-async function currencySymbol(env: Env): Promise<string> {
+export async function currencySymbol(env: Env): Promise<string> {
   const row = await db(env).first<{ value: string }>("SELECT value FROM settings WHERE key = 'bot_currency'");
   return row?.value || "€";
 }
@@ -979,14 +1039,21 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
     </div>
     <span class="row-right">
       <b class="${t.type === "gasto" ? "amount-out" : "amount-in"}">${t.type === "gasto" ? "-" : "+"}${t.amount.toFixed(2)}${cur}</b>
+      <a class="link-btn" href="/familia/transaccion/${t.id}/editar" title="Editar">✏️</a>
       <button class="del" data-del="/familia/transaccion/${t.id}/borrar" title="Borrar">✕</button>
     </span>
   </li>`;
 
   const funds = await d.all<FinanceFund>("SELECT * FROM finance_funds ORDER BY created_at ASC");
   const FUND_KIND_LABEL: Record<string, string> = { porcentaje: "%", fijo: "fijo/mes", ahorro: "ahorro" };
-  const fundRow = async (f: FinanceFund) => {
-    const saldo = await fundBalance(d, f.id);
+  const fundsWithBalance = await Promise.all(funds.map(async (f) => ({ f, saldo: await fundBalance(d, f.id) })));
+
+  const totalAhorrado = fundsWithBalance.filter((x) => x.f.kind === "ahorro").reduce((s, x) => s + x.saldo, 0);
+  const fijos = fundsWithBalance.filter((x) => x.f.kind === "fijo");
+  const totalFijoMeta = fijos.reduce((s, x) => s + (x.f.monthly_target ?? 0), 0);
+  const totalFijoCubierto = fijos.reduce((s, x) => s + Math.min(x.saldo, x.f.monthly_target ?? 0), 0);
+
+  const fundRow = ({ f, saldo }: { f: FinanceFund; saldo: number }) => {
     const target = f.kind === "fijo" ? f.monthly_target : null;
     const pct = target ? Math.min(100, Math.round((saldo / target) * 100)) : null;
     return `<div class="budget-row">
@@ -1000,7 +1067,41 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       ${pct != null ? `<div class="budget-bar"><div class="budget-fill ${saldo < 0 ? "over" : ""}" style="width:${Math.max(0, pct)}%"></div></div>` : ""}
     </div>`;
   };
-  const fundsHtml = funds.length ? (await Promise.all(funds.map(fundRow))).join("") : `<p class="empty-row">Sin sobres definidos — pídele al bot: "quiero guardar 10% para imprevistos y 10% para actividades".</p>`;
+  const fundsHtml = fundsWithBalance.length ? fundsWithBalance.map(fundRow).join("") : `<p class="empty-row">Sin sobres definidos — pídele al bot: "quiero guardar 10% para imprevistos y 10% para actividades".</p>`;
+  const resultadosHtml = fundsWithBalance.length
+    ? `<div class="menu-grid results-grid">
+        <div><span>Ahorro total</span><b class="amount-in">${totalAhorrado.toFixed(2)}${cur}</b></div>
+        <div><span>Gastos fijos cubiertos</span><b>${totalFijoCubierto.toFixed(2)}${cur} / ${totalFijoMeta.toFixed(2)}${cur}</b></div>
+      </div>`
+    : "";
+
+  const maxIO = Math.max(totalIngresos, totalGastos, 1);
+  const ioChart = `<div class="chart-bars io-chart">
+    <div class="chart-row">
+      <span class="chart-label">Ingresos</span>
+      <div class="chart-track"><div class="chart-fill in" style="width:${Math.max(2, Math.round((totalIngresos / maxIO) * 100))}%"></div></div>
+      <span class="chart-value">${totalIngresos.toFixed(2)}${cur}</span>
+    </div>
+    <div class="chart-row">
+      <span class="chart-label">Gastos</span>
+      <div class="chart-track"><div class="chart-fill out" style="width:${Math.max(2, Math.round((totalGastos / maxIO) * 100))}%"></div></div>
+      <span class="chart-value">${totalGastos.toFixed(2)}${cur}</span>
+    </div>
+  </div>`;
+
+  const catEntries = Array.from(byCategory.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const maxCat = Math.max(...catEntries.map(([, v]) => v), 1);
+  const catChart = catEntries.length
+    ? `<div class="chart-bars">${catEntries
+        .map(
+          ([cat, amt]) => `<div class="chart-row" title="${esc(cat)}: ${amt.toFixed(2)}${cur}">
+      <span class="chart-label">${esc(cat)}</span>
+      <div class="chart-track"><div class="chart-fill" style="width:${Math.max(2, Math.round((amt / maxCat) * 100))}%"></div></div>
+      <span class="chart-value">${amt.toFixed(2)}${cur}</span>
+    </div>`,
+        )
+        .join("")}</div>`
+    : `<p class="empty-row">Sin gastos este mes todavía.</p>`;
 
   const body = `
     <section class="panel">
@@ -1008,11 +1109,15 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       <div class="menu-grid">
         <div><span>Ingresos</span><b>${totalIngresos.toFixed(2)}${cur}</b></div>
         <div><span>Gastos</span><b>${totalGastos.toFixed(2)}${cur}</b></div>
-        <div><span>Balance</span><b class="${balance < 0 ? "amount-out" : "amount-in"}">${balance.toFixed(2)}${cur}</b></div>
+        <div><span>Disponible</span><b class="${balance < 0 ? "amount-out" : "amount-in"}">${balance.toFixed(2)}${cur}</b></div>
       </div>
+      ${ioChart}
+      <h3 class="chart-subtitle">Gastos por categoría</h3>
+      ${catChart}
     </section>
     <section class="panel">
       <h2>💰 Sobres / fondos</h2>
+      ${resultadosHtml}
       ${fundsHtml}
       <form class="add-form" method="post" action="/familia/fondo">
         <input type="text" name="nombre" placeholder="Nombre (ej. Imprevistos)" required>
@@ -1162,6 +1267,9 @@ const SHARED_STYLE = `
     .row span, .meta, .role, .hub-card p, .day-date, .recipe { color:#9aa0b4 !important; }
     li, .meal-slot { border-bottom-color:#242938 !important; border-top-color:#242938 !important; }
     .budget-bar { background:#242938; }
+    .chart-track { background:#242938; }
+    .chart-label { color:#9aa0b4 !important; }
+    .chart-value { color:#e8eaf2 !important; }
     .invite-link-box { background:#171b24; border-color:#2a2f3c; }
   }
   header { padding:22px 20px 10px; text-align:center; }
@@ -1241,6 +1349,17 @@ const SHARED_STYLE = `
   .budget-bar { height:8px; border-radius:999px; background:#f0f0f3; overflow:hidden; }
   .budget-fill { height:100%; background:#4a6cf7; border-radius:999px; }
   .budget-fill.over { background:#ef4444; }
+  .chart-subtitle { font-family:var(--sans, inherit); font-size:.82rem; text-transform:uppercase; letter-spacing:.04em; color:#9aa0b4; margin:18px 0 10px; }
+  .chart-bars { display:flex; flex-direction:column; gap:10px; margin-top:14px; }
+  .io-chart { margin-top:16px; }
+  .chart-row { display:grid; grid-template-columns:84px 1fr 74px; align-items:center; gap:10px; }
+  .chart-label { font-size:.82rem; color:#6b7280; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chart-track { height:10px; border-radius:999px; background:#f0f0f3; overflow:hidden; }
+  .chart-fill { height:100%; border-radius:999px; background:#4a6cf7; }
+  .chart-fill.in { background:#16a34a; }
+  .chart-fill.out { background:#ef4444; }
+  .chart-value { text-align:right; font-family:ui-monospace,'SF Mono',Consolas,monospace; font-variant-numeric:tabular-nums; font-size:.82rem; color:#1a1f3c; }
+  .results-grid { margin-bottom:18px; }
   .rem-form select { flex:1 1 110px; }
   .del:hover { color:#ef4444; }
   .add-form { padding-top:10px; margin-top:8px; border-top:1px dashed #e5e7eb; }
