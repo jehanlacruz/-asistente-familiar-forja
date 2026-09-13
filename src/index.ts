@@ -46,6 +46,9 @@ import {
   setBudgetFromForm,
   setFundFromForm,
   deleteFund,
+  renderCreditosPage,
+  setDebtFromForm,
+  deleteDebt,
   renderNinosPage,
   addActivityFromForm,
   toggleActivityFavorite,
@@ -740,6 +743,15 @@ app.post("/familia/fondo", async (c) => {
 });
 app.post("/familia/fondo/:id/borrar", async (c) => {
   await deleteFund(c.env, c.req.param("id"));
+  return c.body(null, 204);
+});
+app.get("/familia/creditos", async (c) => c.html(await renderCreditosPage(c.env, c.req.query())));
+app.post("/familia/deuda", async (c) => {
+  await setDebtFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/creditos");
+});
+app.post("/familia/deuda/:id/borrar", async (c) => {
+  await deleteDebt(c.env, c.req.param("id"));
   return c.body(null, 204);
 });
 app.get("/familia/ninos", async (c) => c.html(await renderNinosPage(c.env)));

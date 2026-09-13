@@ -22,6 +22,7 @@ import {
   sendTelegramMessage,
   fundBalance,
   allocateIncomeToFunds,
+  loanPayoff,
   INVITE_TTL_MS,
   MAX_FULL_ACCESS,
   type FamilyMember,
@@ -30,6 +31,7 @@ import {
   type Transaction,
   type Budget,
   type FinanceFund,
+  type Debt,
 } from "./family-lib";
 
 async function requireFullAccessSender(
@@ -984,6 +986,131 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  const debtInputShape = {
+    nombre: z.string().describe("ej. 'Tarjeta de crédito', 'Préstamo del carro'"),
+    saldo: z.number().positive().describe("Lo que falta por pagar HOY, no el monto original del préstamo"),
+    tasaAnual: z.number().min(0).max(100).optional().describe("Tasa de interés anual en %, si la conocen"),
+    pagoMensual: z.number().positive().describe("Lo que están pagando cada mes actualmente"),
+  };
+
+  const upsertDebt = async (input: z.infer<z.ZodObject<typeof debtInputShape>>): Promise<{ error: string } | { ok: true; mensaje: string }> => {
+    const now = Date.now();
+    const existing = await d.first<{ id: string }>("SELECT id FROM debts WHERE lower(name) = lower(?)", [input.nombre]);
+    if (existing) {
+      await d.run("UPDATE debts SET balance = ?, annual_rate = ?, monthly_payment = ?, updated_at = ? WHERE id = ?", [
+        input.saldo,
+        input.tasaAnual ?? null,
+        input.pagoMensual,
+        now,
+        existing.id,
+      ]);
+    } else {
+      await d.run(
+        `INSERT INTO debts (id, name, balance, annual_rate, monthly_payment, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [newId(), input.nombre, input.saldo, input.tasaAnual ?? null, input.pagoMensual, now, now],
+      );
+    }
+    return { ok: true, mensaje: `Deuda "${input.nombre}" guardada: saldo ${input.saldo}, pago mensual ${input.pagoMensual}${input.tasaAnual != null ? `, tasa ${input.tasaAnual}% anual` : ""}.` };
+  };
+
+  const registrarDeuda = tool({
+    description: "Registra o actualiza UNA deuda/crédito/préstamo con su saldo actual, pago mensual y tasa si la conocen. Para VARIAS de golpe usa registrarVariasDeudas en una sola llamada.",
+    inputSchema: z.object(debtInputShape),
+    execute: async (input) => upsertDebt(input),
+  });
+
+  const registrarVariasDeudas = tool({
+    description: "Registra VARIAS deudas/créditos EN UNA SOLA LLAMADA — úsala cuando te den más de una de golpe, en vez de llamar registrarDeuda varias veces seguidas.",
+    inputSchema: z.object({ deudas: z.array(z.object(debtInputShape)).min(1).max(20) }),
+    execute: async ({ deudas }) => {
+      const resultados = [];
+      for (const dda of deudas) resultados.push(await upsertDebt(dda));
+      return { ok: true, mensaje: `${resultados.length} deuda(s) guardada(s).` };
+    },
+  });
+
+  const listarDeudas = tool({
+    description: "Lista las deudas registradas, con cuántos meses faltan e interés total restante al ritmo de pago actual de cada una.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const debts = await d.all<Debt>("SELECT * FROM debts ORDER BY created_at ASC");
+      return {
+        deudas: debts.map((dd) => {
+          const payoff = loanPayoff(dd.balance, dd.annual_rate, dd.monthly_payment);
+          return {
+            nombre: dd.name,
+            saldo: dd.balance,
+            tasaAnual: dd.annual_rate,
+            pagoMensual: dd.monthly_payment,
+            mesesRestantes: payoff?.months ?? null,
+            interesTotalRestante: payoff?.totalInterest ?? null,
+            advertencia: payoff ? undefined : "El pago mensual actual no alcanza a cubrir ni el interés — así nunca se paga, hay que subir el pago.",
+          };
+        }),
+      };
+    },
+  });
+
+  const borrarDeuda = tool({
+    description: "Borra una deuda ya pagada por completo.",
+    inputSchema: z.object({ nombre: z.string() }),
+    execute: async ({ nombre }) => {
+      const dd = await d.first<{ id: string }>("SELECT id FROM debts WHERE lower(name) = lower(?)", [nombre]);
+      if (!dd) return { error: `No encontré ninguna deuda llamada ${nombre}.` };
+      await d.run("DELETE FROM debts WHERE id = ?", [dd.id]);
+      return { ok: true, mensaje: `Deuda "${nombre}" borrada.` };
+    },
+  });
+
+  const simularPagoDeuda = tool({
+    description:
+      "Simula 'qué pasa si...' con una deuda: pagar más cada mes, y/o abonar un monto único hoy para reducir el saldo. Compara meses e interés del escenario actual contra el nuevo. Úsala cuando pregunten '¿qué pasa si pago 50 más al mes?' o '¿me conviene abonar 500 de una vez?'.",
+    inputSchema: z.object({
+      nombre: z.string(),
+      pagoMensualExtra: z.number().positive().optional().describe("Cuánto MÁS pagarían cada mes, sumado al pago actual"),
+      abonoUnico: z.number().positive().optional().describe("Monto que abonarían una sola vez hoy, reduciendo el saldo antes de seguir pagando igual"),
+    }),
+    execute: async ({ nombre, pagoMensualExtra, abonoUnico }) => {
+      if (!pagoMensualExtra && !abonoUnico) return { error: "Dame al menos un escenario: cuánto pagarían de más al mes, o cuánto abonarían de una vez." };
+      const dd = await d.first<Debt>("SELECT * FROM debts WHERE lower(name) = lower(?)", [nombre]);
+      if (!dd) return { error: `No encontré ninguna deuda llamada ${nombre}.` };
+
+      const actual = loanPayoff(dd.balance, dd.annual_rate, dd.monthly_payment);
+      const resultado: Record<string, unknown> = {
+        deuda: nombre,
+        saldoActual: dd.balance,
+        pagoMensualActual: dd.monthly_payment,
+        escenarioActual: actual ? { meses: actual.months, interesTotal: actual.totalInterest } : "El pago actual no alcanza a cubrir el interés.",
+      };
+
+      if (pagoMensualExtra) {
+        const nuevo = loanPayoff(dd.balance, dd.annual_rate, dd.monthly_payment + pagoMensualExtra);
+        resultado.siPagaMasAlMes = {
+          pagoNuevo: dd.monthly_payment + pagoMensualExtra,
+          meses: nuevo?.months ?? null,
+          interesTotal: nuevo?.totalInterest ?? null,
+          mesesAhorrados: actual && nuevo ? actual.months - nuevo.months : null,
+          interesAhorrado: actual && nuevo ? Math.round((actual.totalInterest - nuevo.totalInterest) * 100) / 100 : null,
+        };
+      }
+
+      if (abonoUnico) {
+        const saldoReducido = Math.max(0, dd.balance - abonoUnico);
+        const nuevo = loanPayoff(saldoReducido, dd.annual_rate, dd.monthly_payment);
+        resultado.siAbonaDeGolpe = {
+          abono: abonoUnico,
+          saldoDespuesDelAbono: saldoReducido,
+          meses: nuevo?.months ?? null,
+          interesTotal: nuevo?.totalInterest ?? null,
+          mesesAhorrados: actual && nuevo ? actual.months - nuevo.months : null,
+          interesAhorrado: actual && nuevo ? Math.round((actual.totalInterest - nuevo.totalInterest) * 100) / 100 : null,
+        };
+      }
+
+      return resultado;
+    },
+  });
+
   const listarFondosFinancieros = tool({
     description: "Lista los sobres/fondos definidos con su saldo actual (lo asignado menos lo gastado de cada uno).",
     inputSchema: z.object({}),
@@ -1164,6 +1291,11 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     consultarPresupuestos,
     definirFondoFinanciero,
     definirVariosFondos,
+    registrarDeuda,
+    registrarVariasDeudas,
+    listarDeudas,
+    borrarDeuda,
+    simularPagoDeuda,
     listarFondosFinancieros,
     unirseConEnlace,
   };

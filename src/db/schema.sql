@@ -534,3 +534,15 @@ CREATE TABLE IF NOT EXISTS fund_allocations (
   FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fund_alloc_fund ON fund_allocations(fund_id);
+
+-- Créditos/préstamos: saldo actual (no el original), para simular "qué pasa
+-- si pago más al mes o abono de golpe" con la fórmula de amortización.
+CREATE TABLE IF NOT EXISTS debts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  balance REAL NOT NULL,
+  annual_rate REAL,
+  monthly_payment REAL NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);

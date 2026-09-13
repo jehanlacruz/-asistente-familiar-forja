@@ -24,6 +24,7 @@ import {
   isAdminViewer,
   canSeeHealthOf,
   allocateIncomeToFunds,
+  loanPayoff,
   INVITE_TTL_MS,
   MAX_FULL_ACCESS,
   type FamilyMember,
@@ -31,6 +32,7 @@ import {
   type Reminder,
   type FamilyActivity,
   type Transaction,
+  type Debt,
   type Budget,
   type FinanceFund,
 } from "./family-lib";
@@ -430,6 +432,29 @@ export async function deleteFund(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM finance_funds WHERE id = ?", [id]);
 }
 
+export async function setDebtFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const nombre = (form.nombre || "").trim();
+  const balance = Number(form.saldo);
+  const pagoMensual = Number(form.pagoMensual);
+  if (!nombre || !balance || !pagoMensual) return;
+  const tasa = form.tasaAnual ? Number(form.tasaAnual) : null;
+  const now = Date.now();
+  const d = db(env);
+  const existing = await d.first<{ id: string }>("SELECT id FROM debts WHERE lower(name) = lower(?)", [nombre]);
+  if (existing) {
+    await d.run("UPDATE debts SET balance = ?, annual_rate = ?, monthly_payment = ?, updated_at = ? WHERE id = ?", [balance, tasa, pagoMensual, now, existing.id]);
+  } else {
+    await d.run(
+      "INSERT INTO debts (id, name, balance, annual_rate, monthly_payment, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [newId(), nombre, balance, tasa, pagoMensual, now, now],
+    );
+  }
+}
+
+export async function deleteDebt(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM debts WHERE id = ?", [id]);
+}
+
 export async function deleteMember(env: Env, id: string): Promise<void> {
   await db(env).run("DELETE FROM family_members WHERE id = ?", [id]);
 }
@@ -559,6 +584,7 @@ const NAV = [
   { key: "menu", href: "/familia/menu", icon: "🍽️", label: "Comida" },
   { key: "recordatorios", href: "/familia/recordatorios", icon: "⏰", label: "Recordatorios" },
   { key: "finanzas", href: "/familia/finanzas", icon: "💶", label: "Finanzas" },
+  { key: "creditos", href: "/familia/creditos", icon: "💳", label: "Créditos" },
   { key: "ninos", href: "/familia/ninos", icon: "🧸", label: "Niños" },
 ];
 
@@ -1075,6 +1101,11 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       </div>`
     : "";
 
+  const fijoNames = new Set(fijos.map((x) => x.f.name.toLowerCase()));
+  const ingresos = rows.filter((r) => r.type === "ingreso");
+  const gastosFijos = rows.filter((r) => r.type === "gasto" && fijoNames.has(r.category.toLowerCase()));
+  const gastosDiarios = rows.filter((r) => r.type === "gasto" && !fijoNames.has(r.category.toLowerCase()));
+
   const maxIO = Math.max(totalIngresos, totalGastos, 1);
   const ioChart = `<div class="chart-bars io-chart">
     <div class="chart-row">
@@ -1142,8 +1173,16 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       </form>
     </section>
     <section class="panel">
-      <h2>📋 Movimientos del mes</h2>
-      <ul class="chores rem-list">${rows.length ? rows.map(txRow).join("") : `<li class="empty-row">Sin movimientos este mes.</li>`}</ul>
+      <h2>🔺 Ingresos del mes</h2>
+      <ul class="chores rem-list">${ingresos.length ? ingresos.map(txRow).join("") : `<li class="empty-row">Sin ingresos este mes.</li>`}</ul>
+    </section>
+    <section class="panel">
+      <h2>📅 Gastos fijos del mes</h2>
+      <ul class="chores rem-list">${gastosFijos.length ? gastosFijos.map(txRow).join("") : `<li class="empty-row">Sin gastos fijos registrados este mes.</li>`}</ul>
+    </section>
+    <section class="panel">
+      <h2>🛍️ Gastos diarios del mes</h2>
+      <ul class="chores rem-list">${gastosDiarios.length ? gastosDiarios.map(txRow).join("") : `<li class="empty-row">Sin gastos variables este mes.</li>`}</ul>
       <form class="add-form" method="post" action="/familia/transaccion">
         <select name="tipo"><option value="gasto">Gasto</option><option value="ingreso">Ingreso</option></select>
         <input type="number" step="0.01" name="monto" placeholder="Monto" required>
@@ -1152,10 +1191,96 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
         <input type="text" name="fondo" placeholder="Sobre del que sale (gastos, opcional)">
         <input type="date" name="fecha">
         <label class="chk"><input type="checkbox" name="privado" value="1"> Privado (solo yo y los admins la vemos)</label>
-        <button type="submit">+ Registrar</button>
+        <button type="submit">+ Registrar movimiento</button>
       </form>
     </section>`;
   return layout(env, "Finanzas", "finanzas", body);
+}
+
+// ── Página: Créditos y préstamos (con simulador "qué pasa si...") ──────
+
+function twoBarChart(cur: string, label1: string, v1: number, label2: string, v2: number, fmt: (n: number) => string): string {
+  const max = Math.max(v1, v2, 1);
+  return `<div class="chart-bars">
+    <div class="chart-row"><span class="chart-label">${esc(label1)}</span><div class="chart-track"><div class="chart-fill" style="width:${Math.max(2, Math.round((v1 / max) * 100))}%"></div></div><span class="chart-value">${fmt(v1)}</span></div>
+    <div class="chart-row"><span class="chart-label">${esc(label2)}</span><div class="chart-track"><div class="chart-fill in" style="width:${Math.max(2, Math.round((v2 / max) * 100))}%"></div></div><span class="chart-value">${fmt(v2)}</span></div>
+  </div>`;
+}
+
+export async function renderCreditosPage(env: Env, query: Record<string, string>): Promise<string> {
+  const d = db(env);
+  const cur = await currencySymbol(env);
+  const debts = await d.all<Debt>("SELECT * FROM debts ORDER BY created_at ASC");
+
+  const debtRow = (dd: Debt) => {
+    const payoff = loanPayoff(dd.balance, dd.annual_rate, dd.monthly_payment);
+    return `<div class="budget-row">
+      <div class="budget-head">
+        <b>${esc(dd.name)} <span class="meta">(${dd.annual_rate != null ? `${dd.annual_rate}% anual` : "sin tasa"})</span></b>
+        <span class="row-right">
+          <span>${dd.balance.toFixed(2)}${cur} · pago ${dd.monthly_payment.toFixed(2)}${cur}/mes</span>
+          <button class="del" data-del="/familia/deuda/${dd.id}/borrar" title="Borrar">✕</button>
+        </span>
+      </div>
+      <p class="soon-note" style="margin:6px 0 0;">${payoff ? `${payoff.months} meses restantes · ${payoff.totalInterest.toFixed(2)}${cur} de interés total` : "⚠️ El pago actual no cubre ni el interés — así nunca se paga."}</p>
+    </div>`;
+  };
+  const debtsHtml = debts.length ? debts.map(debtRow).join("") : `<p class="empty-row">Sin créditos ni préstamos registrados.</p>`;
+
+  const debtOptions = debts.map((dd) => `<option value="${esc(dd.name)}" ${query.deuda === dd.name ? "selected" : ""}>${esc(dd.name)}</option>`).join("");
+
+  let simHtml = "";
+  const chosen = debts.find((dd) => dd.name === query.deuda);
+  if (chosen && (query.extra || query.abono)) {
+    const actual = loanPayoff(chosen.balance, chosen.annual_rate, chosen.monthly_payment);
+    const extra = query.extra ? Number(query.extra) : 0;
+    const abono = query.abono ? Number(query.abono) : 0;
+    const blocks: string[] = [];
+    if (actual) {
+      if (extra > 0) {
+        const nuevo = loanPayoff(chosen.balance, chosen.annual_rate, chosen.monthly_payment + extra);
+        blocks.push(`<h4>Pagando ${extra.toFixed(2)}${cur} más al mes</h4>
+          ${twoBarChart(cur, "Meses (actual)", actual.months, `Meses (+${cur}${extra})`, nuevo?.months ?? 0, (n) => `${n} meses`)}
+          ${nuevo ? `<p class="soon-note">Te ahorrarías <b>${(actual.months - nuevo.months)}</b> meses y <b>${(actual.totalInterest - nuevo.totalInterest).toFixed(2)}${cur}</b> de interés.</p>` : ""}`);
+      }
+      if (abono > 0) {
+        const saldoReducido = Math.max(0, chosen.balance - abono);
+        const nuevo = loanPayoff(saldoReducido, chosen.annual_rate, chosen.monthly_payment);
+        blocks.push(`<h4>Abonando ${abono.toFixed(2)}${cur} de golpe hoy</h4>
+          ${twoBarChart(cur, "Meses (actual)", actual.months, "Meses (con abono)", nuevo?.months ?? 0, (n) => `${n} meses`)}
+          ${nuevo ? `<p class="soon-note">Te ahorrarías <b>${(actual.months - nuevo.months)}</b> meses y <b>${(actual.totalInterest - nuevo.totalInterest).toFixed(2)}${cur}</b> de interés.</p>` : ""}`);
+      }
+    }
+    simHtml = blocks.length ? `<div class="panel" style="margin-top:14px;"><h3 class="chart-subtitle">Simulación: ${esc(chosen.name)}</h3>${blocks.join("<hr style='border:none;border-top:1px solid #f0f0f3;margin:16px 0;'>")}</div>` : "";
+  }
+
+  const body = `
+    <section class="panel">
+      <h2>💳 Créditos y préstamos</h2>
+      ${debtsHtml}
+      <form class="add-form" method="post" action="/familia/deuda">
+        <input type="text" name="nombre" placeholder="Nombre (ej. Tarjeta)" required>
+        <input type="number" step="0.01" name="saldo" placeholder="Saldo actual" required>
+        <input type="number" step="0.01" name="tasaAnual" placeholder="Tasa anual % (opcional)">
+        <input type="number" step="0.01" name="pagoMensual" placeholder="Pago mensual" required>
+        <button type="submit">+ Guardar</button>
+      </form>
+    </section>
+    ${
+      debts.length
+        ? `<section class="panel">
+      <h2>🔮 Simulador: "¿qué pasa si...?"</h2>
+      <form method="get" action="/familia/creditos" class="add-form">
+        <select name="deuda">${debtOptions}</select>
+        <input type="number" step="0.01" name="extra" placeholder="Pagar más al mes (opcional)" value="${esc(query.extra || "")}">
+        <input type="number" step="0.01" name="abono" placeholder="Abonar de golpe hoy (opcional)" value="${esc(query.abono || "")}">
+        <button type="submit">Simular</button>
+      </form>
+    </section>
+    ${simHtml}`
+        : ""
+    }`;
+  return layout(env, "Créditos", "creditos", body);
 }
 
 const KIND_LABEL: Record<string, string> = { casa: "🏠 En casa", aire_libre: "🌳 Al aire libre", fin_semana: "🎉 Fin de semana" };

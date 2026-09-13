@@ -330,4 +330,33 @@ export async function allocateIncomeToFunds(
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_FULL_ACCESS = 5;
 
+export interface Debt {
+  id: string;
+  name: string;
+  balance: number;
+  annual_rate: number | null;
+  monthly_payment: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * Meses para liquidar un saldo con un pago mensual fijo, y el interés total
+ * que se paga en el camino — fórmula estándar de amortización. null si el
+ * pago no alcanza ni a cubrir el interés del mes (nunca se paga así).
+ */
+export function loanPayoff(balance: number, annualRatePct: number | null, monthlyPayment: number): { months: number; totalInterest: number; totalPaid: number } | null {
+  if (balance <= 0) return { months: 0, totalInterest: 0, totalPaid: 0 };
+  const r = (annualRatePct ?? 0) / 100 / 12;
+  if (r === 0) {
+    if (monthlyPayment <= 0) return null;
+    const months = Math.ceil(balance / monthlyPayment);
+    return { months, totalInterest: 0, totalPaid: balance };
+  }
+  if (monthlyPayment <= balance * r) return null;
+  const months = Math.ceil(-Math.log(1 - (balance * r) / monthlyPayment) / Math.log(1 + r));
+  const totalPaid = months * monthlyPayment;
+  return { months, totalInterest: Math.round((totalPaid - balance) * 100) / 100, totalPaid: Math.round(totalPaid * 100) / 100 };
+}
+
 export const db = (env: Env) => new Db(env.DB);
