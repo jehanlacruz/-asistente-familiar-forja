@@ -789,23 +789,33 @@ export async function renderHome(env: Env): Promise<string> {
 
   const menuResumen = menu ? [menu.breakfast, menu.lunch, menu.dinner].filter(Boolean).join(" · ") : null;
 
-  const hubCard = (href: string, icon: string, title: string, body: string, soon = false) => `
+  const hubCard = (href: string, icon: string, title: string, body: string, tone: string, soon = false) => `
     <a class="hub-card ${soon ? "soon" : ""}" href="${href}">
-      <span class="hub-icon">${icon}</span>
+      <span class="hub-icon tone-${tone}">${icon}</span>
       <h3>${esc(title)}</h3>
       <p>${body}</p>
       ${soon ? `<span class="soon-tag">próximamente</span>` : ""}
     </a>`;
 
-  const body = `<div class="hub-grid">
-    ${hubCard("/familia/tareas", "✅", "Tareas de hoy", pendTareas.length ? `${pendTareas.length} pendiente${pendTareas.length === 1 ? "" : "s"}` : "Todo al día 🎉")}
-    ${hubCard("/familia/compra", "🛒", "Lista de compras", (shoppingPending?.n ?? 0) > 0 ? `${shoppingPending?.n} por comprar` : "Nada pendiente")}
-    ${hubCard("/familia/menu", "🍽️", "Menú de hoy", esc(menuResumen || "Sin definir todavía"))}
-    ${hubCard("/familia/ejercicio", "🏃", "Ejercicio", pendEjercicio.length ? `${pendEjercicio.length} rutina${pendEjercicio.length === 1 ? "" : "s"} pendiente${pendEjercicio.length === 1 ? "" : "s"}` : "Sin rutinas hoy")}
-    ${hubCard("/familia/recordatorios", "⏰", "Recordatorios", nextReminder ? `${esc(nextReminder.title)} · ${esc(formatDateTimeInTZ(nextReminder.remind_at, env))}` : "Sin recordatorios programados")}
-    ${hubCard("/familia/finanzas", "💶", "Finanzas", `Balance del mes: ${((balanceRow?.ingresos ?? 0) - (balanceRow?.gastos ?? 0)).toFixed(2)}${cur}`)}
-    ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas y favoritas guardadas")}
-    ${hubCard("/familia/integrantes", "👪", "Integrantes", "Perfiles de la familia")}
+  const tz = env.BOT_TIMEZONE || "Europe/Berlin";
+  const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", hourCycle: "h23" }).format(new Date()));
+  const hello = hour < 6 ? "Buenas noches" : hour < 12 ? "Buenos días" : hour < 20 ? "Buenas tardes" : "Buenas noches";
+  const dateLabel = new Date().toLocaleDateString("es-ES", { timeZone: tz, weekday: "long", day: "numeric", month: "long" });
+
+  const body = `
+    <div class="home-hero">
+      <p class="hero-eyebrow">${esc(dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1))}</p>
+      <h2>${hello}, familia 👋</h2>
+    </div>
+    <div class="hub-grid">
+    ${hubCard("/familia/tareas", "✅", "Tareas de hoy", pendTareas.length ? `${pendTareas.length} pendiente${pendTareas.length === 1 ? "" : "s"}` : "Todo al día 🎉", "green")}
+    ${hubCard("/familia/compra", "🛒", "Lista de compras", (shoppingPending?.n ?? 0) > 0 ? `${shoppingPending?.n} por comprar` : "Nada pendiente", "amber")}
+    ${hubCard("/familia/menu", "🍽️", "Menú de hoy", esc(menuResumen || "Sin definir todavía"), "rose")}
+    ${hubCard("/familia/ejercicio", "🏃", "Ejercicio", pendEjercicio.length ? `${pendEjercicio.length} rutina${pendEjercicio.length === 1 ? "" : "s"} pendiente${pendEjercicio.length === 1 ? "" : "s"}` : "Sin rutinas hoy", "orange")}
+    ${hubCard("/familia/recordatorios", "⏰", "Recordatorios", nextReminder ? `${esc(nextReminder.title)} · ${esc(formatDateTimeInTZ(nextReminder.remind_at, env))}` : "Sin recordatorios programados", "red")}
+    ${hubCard("/familia/finanzas", "💶", "Finanzas", `Balance del mes: ${((balanceRow?.ingresos ?? 0) - (balanceRow?.gastos ?? 0)).toFixed(2)}${cur}`, "blue")}
+    ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas y favoritas guardadas", "yellow")}
+    ${hubCard("/familia/integrantes", "👪", "Integrantes", "Perfiles de la familia", "violet")}
   </div>`;
 
   return layout(env, "Inicio", "inicio", body);
@@ -1438,8 +1448,17 @@ const SHARED_STYLE = `
     .chart-label { color:#9aa0b4 !important; }
     .chart-value { color:#e8eaf2 !important; }
     .invite-link-box { background:#171b24; border-color:#2a2f3c; }
-    .hub-icon, .nav-ic, .brand-badge { background:#1c2b28 !important; }
+    .nav-ic, .brand-badge { background:#1c2b28 !important; }
     .hub-card:hover { box-shadow:0 10px 28px rgba(0,0,0,.4) !important; }
+    .hero-eyebrow { color:#9aa0b4 !important; }
+    .hub-icon.tone-green { background:#123524 !important; color:#4ade80 !important; }
+    .hub-icon.tone-amber { background:#3a2a0a !important; color:#fbbf24 !important; }
+    .hub-icon.tone-rose { background:#3a1626 !important; color:#f472b6 !important; }
+    .hub-icon.tone-orange { background:#3a1f0a !important; color:#fb923c !important; }
+    .hub-icon.tone-red { background:#3a1414 !important; color:#f87171 !important; }
+    .hub-icon.tone-blue { background:#122a4a !important; color:#60a5fa !important; }
+    .hub-icon.tone-yellow { background:#3a330a !important; color:#fde047 !important; }
+    .hub-icon.tone-violet { background:#241a3a !important; color:#c4b5fd !important; }
   }
   header { padding:26px 20px 16px; text-align:center; background:linear-gradient(180deg,#fff,#f3f4f8); }
   .brand { display:inline-flex; align-items:center; gap:12px; }
@@ -1451,10 +1470,22 @@ const SHARED_STYLE = `
   nav a .nav-ic { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; }
   nav a.active { background:var(--accent); color:#fff; }
   main { max-width:760px; margin:0 auto; padding:16px; }
+  .home-hero { padding:6px 4px 18px; }
+  .hero-eyebrow { margin:0 0 2px; font-size:.78rem; font-weight:600; letter-spacing:.03em; color:var(--accent); text-transform:uppercase; }
+  .home-hero h2 { margin:0; font-size:1.5rem; }
   .hub-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; }
   .hub-card { display:block; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:18px; text-decoration:none; color:inherit; position:relative; box-shadow:var(--shadow-sm); transition:transform .15s ease, box-shadow .15s ease; }
   .hub-card:hover { transform:translateY(-3px); box-shadow:var(--shadow-md); }
-  .hub-icon { display:flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:12px; background:var(--accent-tint); font-size:1.3rem; margin-bottom:10px; }
+  .hub-icon { display:flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:12px; background:var(--accent-tint); font-size:1.3rem; margin-bottom:10px; transition:transform .15s ease; }
+  .hub-card:hover .hub-icon { transform:scale(1.08) rotate(-4deg); }
+  .hub-icon.tone-green { background:#dcfce7; color:#16a34a; }
+  .hub-icon.tone-amber { background:#fef3c7; color:#b45309; }
+  .hub-icon.tone-rose { background:#fce7f3; color:#be185d; }
+  .hub-icon.tone-orange { background:#ffedd5; color:#c2410c; }
+  .hub-icon.tone-red { background:#fee2e2; color:#b91c1c; }
+  .hub-icon.tone-blue { background:#dbeafe; color:#1d4ed8; }
+  .hub-icon.tone-yellow { background:#fef9c3; color:#a16207; }
+  .hub-icon.tone-violet { background:#ede9fe; color:#6d28d9; }
   .hub-card h3 { margin:0 0 4px; font-size:1rem; }
   .hub-card p { margin:0; font-size:.82rem; color:var(--ink-soft); }
   .hub-card.soon { opacity:.7; }
