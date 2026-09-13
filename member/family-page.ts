@@ -786,6 +786,9 @@ export async function renderHome(env: Env): Promise<string> {
     [month],
   );
   const cur = await currencySymbol(env);
+  const debtsSummary = await d.first<{ n: number; total: number }>(
+    "SELECT COUNT(*) as n, COALESCE(SUM(balance), 0) as total FROM debts",
+  );
 
   const menuResumen = menu ? [menu.breakfast, menu.lunch, menu.dinner].filter(Boolean).join(" · ") : null;
 
@@ -814,6 +817,7 @@ export async function renderHome(env: Env): Promise<string> {
     ${hubCard("/familia/ejercicio", "🏃", "Ejercicio", pendEjercicio.length ? `${pendEjercicio.length} rutina${pendEjercicio.length === 1 ? "" : "s"} pendiente${pendEjercicio.length === 1 ? "" : "s"}` : "Sin rutinas hoy", "orange")}
     ${hubCard("/familia/recordatorios", "⏰", "Recordatorios", nextReminder ? `${esc(nextReminder.title)} · ${esc(formatDateTimeInTZ(nextReminder.remind_at, env))}` : "Sin recordatorios programados", "red")}
     ${hubCard("/familia/finanzas", "💶", "Finanzas", `Balance del mes: ${((balanceRow?.ingresos ?? 0) - (balanceRow?.gastos ?? 0)).toFixed(2)}${cur}`, "blue")}
+    ${hubCard("/familia/creditos", "💳", "Créditos y préstamos", (debtsSummary?.n ?? 0) > 0 ? `${debtsSummary?.n} activo${debtsSummary?.n === 1 ? "" : "s"} · ${(debtsSummary?.total ?? 0).toFixed(2)}${cur}` : "Sin deudas registradas", "cyan")}
     ${hubCard("/familia/ninos", "🧸", "Niños y actividades", "Ideas y favoritas guardadas", "yellow")}
     ${hubCard("/familia/integrantes", "👪", "Integrantes", "Perfiles de la familia", "violet")}
   </div>`;
@@ -825,7 +829,8 @@ export async function renderHome(env: Env): Promise<string> {
 
 export async function renderIntegrantesPage(env: Env, viewer: FamilyMember | null): Promise<string> {
   const members = await listMembers(db(env));
-  const body = `<div class="grid">${members.map((m) => memberCard(m, viewer)).join("") || `<div class="card">Todavía no hay nadie registrado.</div>`}</div>
+  const body = `<h2 class="page-title"><span class="icon-badge tone-violet">👪</span>Integrantes</h2>
+    <div class="grid">${members.map((m) => memberCard(m, viewer)).join("") || `<div class="card">Todavía no hay nadie registrado.</div>`}</div>
     <details class="add-member"><summary>+ Agregar integrante</summary>
       <form method="post" action="/familia/integrante">
         <input type="text" name="nombre" placeholder="Nombre" required>
@@ -1540,6 +1545,7 @@ const SHARED_STYLE = `
   .add-member button:hover, .add-form button:hover { background:var(--accent-dark); }
   .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:18px; margin-bottom:16px; scroll-margin-top:56px; box-shadow:var(--shadow-sm); }
   .panel h2 { margin:0 0 12px; font-size:1.02rem; display:flex; align-items:center; }
+  .page-title { margin:4px 0 14px; font-size:1.15rem; display:flex; align-items:center; }
   ul.chores { list-style:none; margin:0; padding:0; }
   ul.chores li { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:1px solid #f0f0f3; font-size:.92rem; }
   ul.chores li label { padding-top:1px; }
