@@ -1405,23 +1405,40 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
     <section class="panel">
       <h2><span class="icon-badge tone-blue">🔺</span>Ingresos del mes</h2>
       <ul class="chores rem-list">${ingresos.length ? ingresos.map(txRow).join("") : `<li class="empty-row">Sin ingresos este mes.</li>`}</ul>
+      <form class="add-form" method="post" action="/familia/transaccion">
+        <input type="hidden" name="tipo" value="ingreso">
+        <input type="number" step="0.01" name="monto" placeholder="Monto" required>
+        <input type="text" name="categoria" placeholder="Fuente (ej. Nómina, Freelance)" required>
+        <input type="text" name="descripcion" placeholder="Descripción (opcional)">
+        <input type="date" name="fecha">
+        <div class="btn-row"><button type="submit">+ Registrar ingreso</button></div>
+      </form>
     </section>
     <section class="panel">
       <h2><span class="icon-badge tone-blue">📅</span>Gastos fijos del mes</h2>
       <ul class="chores rem-list">${gastosFijos.length ? gastosFijos.map(txRow).join("") : `<li class="empty-row">Sin gastos fijos registrados este mes.</li>`}</ul>
+      <form class="add-form" method="post" action="/familia/transaccion">
+        <input type="hidden" name="tipo" value="gasto">
+        <input type="number" step="0.01" name="monto" placeholder="Monto" required>
+        <input type="text" name="categoria" placeholder="Categoría (igual al nombre del sobre fijo)" required>
+        <input type="text" name="descripcion" placeholder="Descripción (opcional)">
+        <input type="date" name="fecha">
+        <label class="chk"><input type="checkbox" name="privado" value="1"> Privado (solo yo y los admins la vemos)</label>
+        <div class="btn-row"><button type="submit">+ Registrar gasto fijo</button></div>
+      </form>
     </section>
     <section class="panel">
       <h2><span class="icon-badge tone-blue">🛍️</span>Gastos diarios del mes</h2>
       <ul class="chores rem-list">${gastosDiarios.length ? gastosDiarios.map(txRow).join("") : `<li class="empty-row">Sin gastos variables este mes.</li>`}</ul>
       <form class="add-form" method="post" action="/familia/transaccion">
-        <select name="tipo"><option value="gasto">Gasto</option><option value="ingreso">Ingreso</option></select>
+        <input type="hidden" name="tipo" value="gasto">
         <input type="number" step="0.01" name="monto" placeholder="Monto" required>
-        <input type="text" name="categoria" placeholder="Categoría" required>
-        <input type="text" name="descripcion" placeholder="Descripción / fuente (opcional)">
-        <input type="text" name="fondo" placeholder="Sobre del que sale (gastos, opcional)">
+        <input type="text" name="categoria" placeholder="Categoría (ej. Súper, Ocio)" required>
+        <input type="text" name="descripcion" placeholder="Descripción (opcional)">
+        <input type="text" name="fondo" placeholder="Sobre del que sale (opcional)">
         <input type="date" name="fecha">
         <label class="chk"><input type="checkbox" name="privado" value="1"> Privado (solo yo y los admins la vemos)</label>
-        <button type="submit">+ Registrar movimiento</button>
+        <div class="btn-row"><button type="submit">+ Registrar gasto variable</button></div>
       </form>
     </section>`;
   return await layout(env, "Finanzas", "finanzas", body);
