@@ -1252,11 +1252,12 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     if (input.tipo === "porcentaje" && input.porcentaje == null) return { error: `Falta el porcentaje para el sobre "${input.nombre}".` };
     if (input.tipo === "fijo" && input.montoMensual == null) return { error: `Falta el monto mensual para el sobre "${input.nombre}".` };
     const now = Date.now();
+    const maxOrder = await d.first<{ n: number }>("SELECT COALESCE(MAX(sort_order), 0) as n FROM finance_funds");
     await d.run(
-      `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, is_subscription, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, is_subscription, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, notes = excluded.notes, is_subscription = excluded.is_subscription, updated_at = excluded.updated_at`,
-      [newId(), input.nombre, input.tipo, input.porcentaje ?? null, input.montoMensual ?? null, input.notas ?? null, input.esSuscripcion ? 1 : 0, now, now],
+      [newId(), input.nombre, input.tipo, input.porcentaje ?? null, input.montoMensual ?? null, input.notas ?? null, input.esSuscripcion ? 1 : 0, (maxOrder?.n ?? 0) + 1, now, now],
     );
     return { ok: true, mensaje: `Sobre "${input.nombre}" (${input.tipo}${input.tipo === "porcentaje" ? ` ${input.porcentaje}%` : input.tipo === "fijo" ? ` ${input.montoMensual}/mes` : ""}${input.esSuscripcion ? " · suscripción" : ""}) guardado.` };
   };

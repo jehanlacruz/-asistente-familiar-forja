@@ -67,6 +67,7 @@ export interface FinanceFund {
   monthly_target: number | null;
   notes: string | null;
   is_subscription: number;
+  sort_order: number;
   created_at: number;
   updated_at: number;
 }
@@ -428,3 +429,18 @@ export async function starBalance(db: Db, memberId: string): Promise<number> {
 }
 
 export const db = (env: Env) => new Db(env.DB);
+
+/** Lee un valor de la tabla settings (key/value genérica) — null si no está definido. */
+export async function getSetting(env: Env, key: string): Promise<string | null> {
+  const row = await db(env).first<{ value: string }>("SELECT value FROM settings WHERE key = ?", [key]);
+  return row?.value ?? null;
+}
+
+/** Guarda (o reemplaza) un valor en la tabla settings. */
+export async function setSetting(env: Env, key: string, value: string): Promise<void> {
+  await db(env).run(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    [key, value, Date.now()],
+  );
+}

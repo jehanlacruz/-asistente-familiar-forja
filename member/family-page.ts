@@ -11,6 +11,8 @@
 // reales, Actividad física con plan, Niños y actividades, Finanzas.
 import {
   db,
+  getSetting,
+  setSetting,
   newId,
   listMembers,
   findMemberByName,
@@ -390,7 +392,7 @@ export async function updateTransactionFromForm(
   return { ok: true };
 }
 
-export function renderEditTransactionPage(env: Env, tx: Transaction, cur: string): string {
+export async function renderEditTransactionPage(env: Env, tx: Transaction, cur: string): Promise<string> {
   const body = `<section class="panel">
     <h2>✏️ Editar movimiento</h2>
     <form method="post" action="/familia/transaccion/${tx.id}">
@@ -407,7 +409,7 @@ export function renderEditTransactionPage(env: Env, tx: Transaction, cur: string
       </div>
     </form>
   </section>`;
-  return layout(env, "Editar movimiento", "finanzas", body);
+  return await layout(env, "Editar movimiento", "finanzas", body);
 }
 
 export async function setBudgetFromForm(env: Env, form: Record<string, string>): Promise<void> {
@@ -429,12 +431,23 @@ export async function setFundFromForm(env: Env, form: Record<string, string>): P
   const montoMensual = form.montoMensual ? Number(form.montoMensual) : null;
   const esSuscripcion = form.esSuscripcion === "1" ? 1 : 0;
   const now = Date.now();
-  await db(env).run(
-    `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, is_subscription, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  const d = db(env);
+  const maxOrder = await d.first<{ n: number }>("SELECT COALESCE(MAX(sort_order), 0) as n FROM finance_funds");
+  await d.run(
+    `INSERT INTO finance_funds (id, name, kind, percentage, monthly_target, notes, is_subscription, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, percentage = excluded.percentage, monthly_target = excluded.monthly_target, is_subscription = excluded.is_subscription, updated_at = excluded.updated_at`,
-    [newId(), nombre, tipo, porcentaje, montoMensual, null, esSuscripcion, now, now],
+    [newId(), nombre, tipo, porcentaje, montoMensual, null, esSuscripcion, (maxOrder?.n ?? 0) + 1, now, now],
   );
+}
+
+export async function reorderFundsFromForm(env: Env, orderedIds: string[]): Promise<void> {
+  const d = db(env);
+  let i = 1;
+  for (const id of orderedIds) {
+    await d.run("UPDATE finance_funds SET sort_order = ? WHERE id = ?", [i, id]);
+    i++;
+  }
 }
 
 export async function deleteFund(env: Env, id: string): Promise<void> {
@@ -625,18 +638,18 @@ export async function deleteWebSession(env: Env, sessionToken: string): Promise<
   await db(env).run("DELETE FROM family_web_sessions WHERE token = ?", [sessionToken]);
 }
 
-export function renderWebInviteLinkPage(env: Env, memberName: string, url: string): string {
+export async function renderWebInviteLinkPage(env: Env, memberName: string, url: string): Promise<string> {
   const body = `<section class="panel" style="text-align:center;">
     <h2>🔗 Enlace de acceso para ${esc(memberName)}</h2>
     <p class="soon-desc">Mándaselo por su Telegram u otro chat privado — es de un solo uso. Al abrirlo en su navegador queda con su propia sesión guardada ahí; no necesita saber ninguna contraseña.</p>
     <div class="invite-link-box">${esc(url)}</div>
     <a class="btn-secondary" href="/familia/integrantes">← Volver</a>
   </section>`;
-  return layout(env, "Enlace generado", "integrantes", body);
+  return await layout(env, "Enlace generado", "integrantes", body);
 }
 
-export function renderWebInviteInvalidPage(env: Env): string {
-  return layout(
+export async function renderWebInviteInvalidPage(env: Env): Promise<string> {
+  return await layout(
     env,
     "Enlace inválido",
     "integrantes",
@@ -700,22 +713,24 @@ const NAV = [
   { key: "creditos", href: "/familia/creditos", icon: "💳", label: "Créditos" },
   { key: "ninos", href: "/familia/ninos", icon: "🧸", label: "Niños" },
   { key: "recompensas", href: "/familia/recompensas", icon: "⭐", label: "Recompensas" },
+  { key: "ajustes", href: "/familia/ajustes", icon: "⚙️", label: "Ajustes" },
 ];
 
 // Íconos fijos de la barra inferior en móvil — el resto vive en el panel "Más".
 const BOTTOM_NAV_KEYS = ["inicio", "tareas", "recompensas", "integrantes"];
 
-function layout(env: Env, title: string, activeKey: string, bodyHtml: string): string {
+async function layout(env: Env, title: string, activeKey: string, bodyHtml: string): Promise<string> {
+  const botName = (await getSetting(env, "family_bot_name")) || env.BUSINESS_NAME || "Centro Familiar";
   return `<!doctype html>
 <html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)} · ${esc(env.BUSINESS_NAME || "Centro Familiar")}</title>
+<title>${esc(title)} · ${esc(botName)}</title>
 <link rel="manifest" href="/familia/manifest.webmanifest">
 <meta name="theme-color" content="#2b6e63">
 <link rel="apple-touch-icon" href="/familia/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Centro Familiar">
+<meta name="apple-mobile-web-app-title" content="${esc(botName)}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
@@ -723,12 +738,12 @@ function layout(env: Env, title: string, activeKey: string, bodyHtml: string): s
 </head><body>
 <div class="app-shell">
   <aside class="sidebar">
-    <div class="brand"><span class="brand-badge">👨‍👩‍👧‍👦</span><div><h1>Centro Familiar</h1><p>${esc(env.BUSINESS_NAME || "Familia")}</p></div></div>
+    <div class="brand"><span class="brand-badge">👨‍👩‍👧‍👦</span><div><h1>${esc(botName)}</h1><p>${esc(env.BUSINESS_NAME || "Familia")}</p></div></div>
     <nav class="side-nav">${NAV.map((n) => `<a href="${n.href}" class="${n.key === activeKey ? "active" : ""}"><span class="nav-ic">${n.icon}</span>${esc(n.label)}</a>`).join("")}</nav>
   </aside>
   <div class="content">
     <header class="mobile-header">
-      <div class="brand"><span class="brand-badge">👨‍👩‍👧‍👦</span><div><h1>Centro Familiar</h1><p>${esc(env.BUSINESS_NAME || "Familia")}</p></div></div>
+      <div class="brand"><span class="brand-badge">👨‍👩‍👧‍👦</span><div><h1>${esc(botName)}</h1><p>${esc(env.BUSINESS_NAME || "Familia")}</p></div></div>
     </header>
     <main>${bodyHtml}</main>
     <footer>Página privada de la familia — no la compartas fuera de casa.<br><form method="post" action="/familia/salir" style="display:inline"><button type="submit" class="link-btn">Cerrar sesión</button></form></footer>
@@ -744,7 +759,7 @@ function layout(env: Env, title: string, activeKey: string, bodyHtml: string): s
 </body></html>`;
 }
 
-function comingSoonPage(env: Env, key: string, icon: string, title: string, description: string, willHave: string[]): string {
+async function comingSoonPage(env: Env, key: string, icon: string, title: string, description: string, willHave: string[]): Promise<string> {
   const body = `<section class="panel soon-panel">
     <div class="soon-icon">${icon}</div>
     <h2>${esc(title)}</h2>
@@ -753,7 +768,7 @@ function comingSoonPage(env: Env, key: string, icon: string, title: string, desc
     <ul class="soon-list">${willHave.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
     <a class="btn-secondary" href="/familia">← Volver al inicio</a>
   </section>`;
-  return layout(env, title, key, body);
+  return await layout(env, title, key, body);
 }
 
 // ── Tarjetas y piezas reusables ────────────────────────────────────────
@@ -957,7 +972,7 @@ export async function renderHome(env: Env): Promise<string> {
     ${hubCard("/familia/integrantes", "👪", "Integrantes", "Perfiles de la familia", "violet")}
   </div>`;
 
-  return layout(env, "Inicio", "inicio", body);
+  return await layout(env, "Inicio", "inicio", body);
 }
 
 // ── Página: Integrantes ─────────────────────────────────────────────────
@@ -987,7 +1002,7 @@ export async function renderIntegrantesPage(env: Env, viewer: FamilyMember | nul
         <button type="submit">Guardar integrante</button>
       </form>
     </details>`;
-  return layout(env, "Integrantes", "integrantes", body);
+  return await layout(env, "Integrantes", "integrantes", body);
 }
 
 // ── Página: Tareas (diarias, puntuales, ejercicio, asignadas) ──────────
@@ -1019,7 +1034,7 @@ export async function renderTareasPage(env: Env): Promise<string> {
     ${section("asignadas", "🙋", "Quién hace qué", asignadasHtml)}
     <p class="soon-note">El ejercicio tiene su propia página → <a href="/familia/ejercicio">Actividad física</a>.</p>
   `;
-  return layout(env, "Tareas", "tareas", body);
+  return await layout(env, "Tareas", "tareas", body);
 }
 
 // ── Página: Actividad física ────────────────────────────────────────────
@@ -1048,7 +1063,7 @@ export async function renderEjercicioPage(env: Env): Promise<string> {
     ${section("ejercicio", "🏃", "Sesiones de esta semana", groupedChoreList(ejercicio, nameById, "Sin rutinas registradas todavía.") + addChoreForm(members, "puntual", "ejercicio"), "orange")}
     <p class="soon-note">Para un plan personalizado (nivel, tiempo disponible, lesiones), pídeselo al bot por chat: "arma mi rutina de ejercicio" — usa tu perfil físico, editable en Integrantes.</p>
   `;
-  return layout(env, "Ejercicio", "ejercicio", body);
+  return await layout(env, "Ejercicio", "ejercicio", body);
 }
 
 // ── Página: Menú de hoy ─────────────────────────────────────────────────
@@ -1120,7 +1135,7 @@ export async function renderMenuPage(env: Env): Promise<string> {
       <h2><span class="icon-badge tone-rose">📅</span>Semana</h2>
       <div class="week-grid">${weekDates.map((date, i) => dayCard(date, i)).join("")}</div>
     </section>`;
-  return layout(env, "Menú", "menu", body);
+  return await layout(env, "Menú", "menu", body);
 }
 
 // ── Página: Lista de la compra ──────────────────────────────────────────
@@ -1157,7 +1172,7 @@ export async function renderCompraPage(env: Env): Promise<string> {
      <p class="soon-note">Pídele al bot "arma la lista de compras de la semana" — calcula cantidades según el menú y cuántos son, y te dice qué picar y congelar para que no se dañe.</p>`,
     "amber",
   );
-  return layout(env, "Compra", "compra", body);
+  return await layout(env, "Compra", "compra", body);
 }
 
 // ── Páginas "próximamente" ───────────────────────────────────────────────
@@ -1194,7 +1209,7 @@ export async function renderRecordatoriosPage(env: Env): Promise<string> {
       <button type="submit">+ Programar</button>
     </form>
   </section>`;
-  return layout(env, "Recordatorios", "recordatorios", body);
+  return await layout(env, "Recordatorios", "recordatorios", body);
 }
 
 export async function currencySymbol(env: Env): Promise<string> {
@@ -1246,7 +1261,7 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
     </span>
   </li>`;
 
-  const funds = await d.all<FinanceFund>("SELECT * FROM finance_funds ORDER BY created_at ASC");
+  const funds = await d.all<FinanceFund>("SELECT * FROM finance_funds ORDER BY sort_order ASC, created_at ASC");
   const FUND_KIND_LABEL: Record<string, string> = { porcentaje: "%", fijo: "fijo/mes", ahorro: "ahorro" };
   const fundsWithBalance = await Promise.all(funds.map(async (f) => ({ f, saldo: await fundBalance(d, f.id) })));
 
@@ -1258,18 +1273,22 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
   const fundRow = ({ f, saldo }: { f: FinanceFund; saldo: number }) => {
     const target = f.kind === "fijo" ? f.monthly_target : null;
     const pct = target ? Math.min(100, Math.round((saldo / target) * 100)) : null;
-    return `<div class="budget-row">
+    return `<div class="budget-row draggable-row" data-drag-id="${f.id}"
+      data-edit-nombre="${esc(f.name)}" data-edit-tipo="${f.kind}" data-edit-porcentaje="${f.percentage ?? ""}" data-edit-monto="${f.monthly_target ?? ""}" data-edit-sub="${f.is_subscription ? "1" : "0"}">
       <div class="budget-head">
-        <b>${esc(f.name)} <span class="meta">(${FUND_KIND_LABEL[f.kind] ?? f.kind}${f.kind === "porcentaje" ? ` ${f.percentage}%` : ""})</span></b>${f.is_subscription ? ` <span class="badge managed">📱 suscripción</span>` : ""}
+        <span class="budget-title"><span class="drag-handle" title="Arrastra para reordenar">⠿</span><b>${esc(f.name)} <span class="meta">(${FUND_KIND_LABEL[f.kind] ?? f.kind}${f.kind === "porcentaje" ? ` ${f.percentage}%` : ""})</span></b>${f.is_subscription ? ` <span class="badge managed">📱 suscripción</span>` : ""}</span>
         <span class="row-right">
           <span class="${saldo < 0 ? "over" : ""}">${saldo.toFixed(2)}${cur}${target ? ` / ${target.toFixed(2)}${cur}` : ""}</span>
+          <button type="button" class="link-btn edit-fund" title="Editar" style="margin-top:0;">✏️</button>
           <button class="del" data-del="/familia/fondo/${f.id}/borrar" title="Borrar">✕</button>
         </span>
       </div>
       ${pct != null ? `<div class="budget-bar"><div class="budget-fill ${saldo < 0 ? "over" : ""}" style="width:${Math.max(0, pct)}%"></div></div>` : ""}
     </div>`;
   };
-  const fundsHtml = fundsWithBalance.length ? fundsWithBalance.map(fundRow).join("") : `<p class="empty-row">Sin sobres definidos — pídele al bot: "quiero guardar 10% para imprevistos y 10% para actividades".</p>`;
+  const fundsHtml = fundsWithBalance.length
+    ? `<div id="fundsList">${fundsWithBalance.map(fundRow).join("")}</div>`
+    : `<p class="empty-row">Sin sobres definidos — pídele al bot: "quiero guardar 10% para imprevistos y 10% para actividades".</p>`;
   const resultadosHtml = fundsWithBalance.length
     ? `<div class="menu-grid results-grid">
         <div><span>Ahorro total</span><b class="amount-in">${totalAhorrado.toFixed(2)}${cur}</b></div>
@@ -1349,7 +1368,7 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
       <h2><span class="icon-badge tone-blue">💰</span>Sobres / fondos</h2>
       ${resultadosHtml}
       ${fundsHtml}
-      <form class="add-form" method="post" action="/familia/fondo">
+      <form class="add-form" method="post" action="/familia/fondo" id="fundForm">
         <input type="text" name="nombre" placeholder="Nombre (ej. Imprevistos)" required>
         <select name="tipo">
           <option value="porcentaje">% de cada ingreso</option>
@@ -1359,9 +1378,9 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
         <input type="number" step="0.1" name="porcentaje" placeholder="% (si aplica)">
         <input type="number" step="0.01" name="montoMensual" placeholder="Meta mensual (si aplica)">
         <label class="chk"><input type="checkbox" name="esSuscripcion" value="1"> Es una suscripción/app (Netflix, ChatGPT, gimnasio…)</label>
-        <button type="submit">+ Crear sobre</button>
+        <div class="btn-row"><button type="submit" id="fundFormSubmit">+ Crear sobre</button></div>
       </form>
-      <p class="soon-note">Al registrar un ingreso, se reparte solo: primero los % , luego los fijos hasta su meta del mes, el resto a ahorro.</p>
+      <p class="soon-note">Al registrar un ingreso, se reparte solo: primero los % , luego los fijos hasta su meta del mes, el resto a ahorro. Arrastra ⠿ para reordenar los sobres, o toca ✏️ para editar uno.</p>
     </section>
     <section class="panel">
       <h2><span class="icon-badge tone-blue">🎯</span>Presupuestos simples</h2>
@@ -1394,7 +1413,7 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
         <button type="submit">+ Registrar movimiento</button>
       </form>
     </section>`;
-  return layout(env, "Finanzas", "finanzas", body);
+  return await layout(env, "Finanzas", "finanzas", body);
 }
 
 // ── Página: Créditos y préstamos (con simulador "qué pasa si...") ──────
@@ -1480,7 +1499,7 @@ export async function renderCreditosPage(env: Env, query: Record<string, string>
     ${simHtml}`
         : ""
     }`;
-  return layout(env, "Créditos", "creditos", body);
+  return await layout(env, "Créditos", "creditos", body);
 }
 
 const KIND_LABEL: Record<string, string> = { casa: "🏠 En casa", aire_libre: "🌳 Al aire libre", fin_semana: "🎉 Fin de semana" };
@@ -1537,7 +1556,7 @@ export async function renderNinosPage(env: Env): Promise<string> {
       </form>
       <p class="soon-note">Marca ⭐ la casilla de una actividad cuando ya la probaron y funcionó, para acordarte de repetirla.</p>
     </section>`;
-  return layout(env, "Niños", "ninos", body);
+  return await layout(env, "Niños", "ninos", body);
 }
 
 // ── Página: Recompensas (estrellas, tienda y logros) ─────────────────────
@@ -1652,7 +1671,33 @@ export async function renderRecompensasPage(env: Env): Promise<string> {
         <button type="submit">🎉 Dar logro</button>
       </form>
     </section>`;
-  return layout(env, "Recompensas", "recompensas", body);
+  return await layout(env, "Recompensas", "recompensas", body);
+}
+
+// ── Página: Ajustes ───────────────────────────────────────────────────────
+
+export async function renderAjustesPage(env: Env): Promise<string> {
+  const botName = (await getSetting(env, "family_bot_name")) || env.BUSINESS_NAME || "Centro Familiar";
+  const currency = await currencySymbol(env);
+
+  const body = `
+    <section class="panel">
+      <h2><span class="icon-badge tone-violet">⚙️</span>Ajustes</h2>
+      <form class="add-form" method="post" action="/familia/ajustes" style="flex-direction:column;align-items:stretch;">
+        <label class="field">Nombre del bot / de la app<input type="text" name="nombreBot" value="${esc(botName)}" placeholder="Centro Familiar" required></label>
+        <label class="field">Símbolo de moneda<input type="text" name="moneda" value="${esc(currency)}" maxlength="3" placeholder="€, $, Bs..."></label>
+        <div class="btn-row"><button type="submit">Guardar</button></div>
+      </form>
+      <p class="soon-note">El nombre se ve en el título de la pestaña, la barra lateral y la pantalla de inicio de la app instalada.</p>
+    </section>`;
+  return await layout(env, "Ajustes", "ajustes", body);
+}
+
+export async function setAjustesFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const nombre = (form.nombreBot || "").trim();
+  if (nombre) await setSetting(env, "family_bot_name", nombre);
+  const moneda = (form.moneda || "").trim();
+  if (moneda) await setSetting(env, "bot_currency", moneda);
 }
 
 // ── Página: editar integrante ────────────────────────────────────────────
@@ -1660,7 +1705,7 @@ export async function renderRecompensasPage(env: Env): Promise<string> {
 export async function renderEditMemberPage(env: Env, id: string): Promise<string> {
   const d = db(env);
   const m = await d.first<FamilyMember>("SELECT * FROM family_members WHERE id = ?", [id]);
-  if (!m) return layout(env, "Integrante no encontrado", "integrantes", `<p>No encontré a ese integrante. <a href="/familia/integrantes">Volver</a></p>`);
+  if (!m) return await layout(env, "Integrante no encontrado", "integrantes", `<p>No encontré a ese integrante. <a href="/familia/integrantes">Volver</a></p>`);
 
   const body = `<section class="panel">
     <h2>✏️ Editar a ${esc(m.name)}</h2>
@@ -1695,7 +1740,7 @@ export async function renderEditMemberPage(env: Env, id: string): Promise<string
       <button type="submit" class="danger">🗑 Borrar a ${esc(m.name)}</button>
     </form>
   </section>`;
-  return layout(env, `Editar ${m.name}`, "integrantes", body);
+  return await layout(env, `Editar ${m.name}`, "integrantes", body);
 }
 
 // ── Estilos y script compartidos ───────────────────────────────────────
@@ -1869,9 +1914,13 @@ const SHARED_STYLE = `
   .rem-info .txt { overflow-wrap:break-word; }
   .amount-in { color:#16a34a; }
   .amount-out { color:#b91c1c; }
-  .budget-row { margin-bottom:14px; }
+  .budget-row { margin-bottom:14px; border-radius:var(--radius-sm); }
   .budget-row:last-of-type { margin-bottom:18px; }
-  .budget-head { display:flex; justify-content:space-between; font-size:.85rem; margin-bottom:5px; }
+  .budget-row.dragging { opacity:.5; background:var(--accent-tint); }
+  .budget-title { display:flex; align-items:center; gap:6px; min-width:0; }
+  .drag-handle { flex:none; cursor:grab; color:var(--ink-faint); font-size:1rem; padding:2px 4px; touch-action:none; user-select:none; }
+  .drag-handle:active { cursor:grabbing; }
+  .budget-head { display:flex; justify-content:space-between; align-items:center; font-size:.85rem; margin-bottom:5px; gap:8px; }
   .budget-head span.over { color:#b91c1c; font-weight:600; }
   .budget-bar { height:8px; border-radius:999px; background:#f0f0f3; overflow:hidden; }
   .budget-fill { height:100%; background:#2b6e63; border-radius:999px; }
@@ -1929,12 +1978,64 @@ document.querySelectorAll('[data-toggle]').forEach(function (el) {
 document.querySelectorAll('[data-del]').forEach(function (el) {
   el.addEventListener('click', function () {
     if (!confirm('¿Borrar esto?')) return;
-    var li = el.closest('li');
+    var row = el.closest('li, .budget-row');
     fetch(el.dataset.del, { method: 'POST' })
-      .then(function (r) { if (r.ok && li) li.remove(); })
+      .then(function (r) { if (r.ok && row) row.remove(); })
       .catch(function () {});
   });
 });
+(function () {
+  var list = document.getElementById('fundsList');
+  if (!list) return;
+  var dragEl = null;
+  function onDown(e) {
+    var handle = e.target.closest ? e.target.closest('.drag-handle') : null;
+    if (!handle) return;
+    dragEl = handle.closest('.draggable-row');
+    if (!dragEl) return;
+    e.preventDefault();
+    dragEl.classList.add('dragging');
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }
+  function onMove(e) {
+    if (!dragEl) return;
+    var target = document.elementFromPoint(e.clientX, e.clientY);
+    var row = target ? target.closest('.draggable-row') : null;
+    if (row && row !== dragEl && list.contains(row)) {
+      var rect = row.getBoundingClientRect();
+      var before = (e.clientY - rect.top) < rect.height / 2;
+      list.insertBefore(dragEl, before ? row : row.nextSibling);
+    }
+  }
+  function onUp() {
+    if (!dragEl) return;
+    dragEl.classList.remove('dragging');
+    var ids = Array.prototype.map.call(list.querySelectorAll('.draggable-row'), function (r) { return r.dataset.dragId; });
+    fetch('/familia/fondo/reordenar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids }) }).catch(function () {});
+    dragEl = null;
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+  }
+  list.addEventListener('pointerdown', onDown);
+
+  var fundForm = document.getElementById('fundForm');
+  var fundFormSubmit = document.getElementById('fundFormSubmit');
+  list.querySelectorAll('.edit-fund').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var row = btn.closest('.draggable-row');
+      if (!fundForm || !row) return;
+      fundForm.nombre.value = row.dataset.editNombre || '';
+      fundForm.tipo.value = row.dataset.editTipo || 'porcentaje';
+      fundForm.porcentaje.value = row.dataset.editPorcentaje || '';
+      fundForm.montoMensual.value = row.dataset.editMonto || '';
+      fundForm.esSuscripcion.checked = row.dataset.editSub === '1';
+      if (fundFormSubmit) fundFormSubmit.textContent = 'Guardar cambios';
+      fundForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      fundForm.nombre.focus();
+    });
+  });
+})();
 var moreBtn = document.getElementById('moreBtn');
 var moreSheet = document.getElementById('moreSheet');
 if (moreBtn && moreSheet) {

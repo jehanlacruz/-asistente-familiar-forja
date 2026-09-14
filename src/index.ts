@@ -46,6 +46,7 @@ import {
   setBudgetFromForm,
   setFundFromForm,
   deleteFund,
+  reorderFundsFromForm,
   renderCreditosPage,
   setDebtFromForm,
   deleteDebt,
@@ -59,6 +60,8 @@ import {
   requestRedemptionFromForm,
   resolveRedemption,
   giveAchievementFromForm,
+  renderAjustesPage,
+  setAjustesFromForm,
   addActivityFromForm,
   toggleActivityFavorite,
   deleteActivity,
@@ -676,7 +679,7 @@ app.use("/familia/*", async (c, next) => {
 });
 app.get("/familia/entrar/:token", async (c) => {
   const sessionToken = await consumeWebInvite(c.env, c.req.param("token"));
-  if (!sessionToken) return c.html(renderWebInviteInvalidPage(c.env), 400);
+  if (!sessionToken) return c.html(await renderWebInviteInvalidPage(c.env), 400);
   setCookie(c, "family_session", sessionToken, {
     httpOnly: true,
     secure: true,
@@ -691,7 +694,7 @@ app.post("/familia/integrante/:id/generar-acceso-web", async (c) => {
   const result = await createWebInvite(c.env, c.req.param("id"));
   if (!result.ok) return c.html(`<p>${result.error}</p><a href="/familia/integrantes">Volver</a>`, 400);
   const url = `${new URL(c.req.url).origin}/familia/entrar/${result.token}`;
-  return c.html(renderWebInviteLinkPage(c.env, result.memberName, url));
+  return c.html(await renderWebInviteLinkPage(c.env, result.memberName, url));
 });
 app.post("/familia/salir", async (c) => {
   const token = getCookie(c, "family_session");
@@ -734,7 +737,7 @@ app.get("/familia/transaccion/:id/editar", async (c) => {
   const d = familyDb(c.env);
   const tx = await d.first<Transaction>("SELECT * FROM transactions WHERE id = ?", [c.req.param("id")]);
   if (!tx) return c.html(`<p>Ese movimiento ya no existe.</p><a href="/familia/finanzas">Volver</a>`, 404);
-  return c.html(renderEditTransactionPage(c.env, tx, await currencySymbol(c.env)));
+  return c.html(await renderEditTransactionPage(c.env, tx, await currencySymbol(c.env)));
 });
 app.post("/familia/transaccion/:id", async (c) => {
   const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
@@ -752,6 +755,11 @@ app.post("/familia/fondo", async (c) => {
 });
 app.post("/familia/fondo/:id/borrar", async (c) => {
   await deleteFund(c.env, c.req.param("id"));
+  return c.body(null, 204);
+});
+app.post("/familia/fondo/reordenar", async (c) => {
+  const body = await c.req.json<{ ids?: string[] }>().catch(() => ({ ids: [] }));
+  await reorderFundsFromForm(c.env, Array.isArray(body.ids) ? body.ids : []);
   return c.body(null, 204);
 });
 app.get("/familia/creditos", async (c) => c.html(await renderCreditosPage(c.env, c.req.query())));
@@ -799,6 +807,11 @@ app.post("/familia/canje/:id/resolver", async (c) => {
 app.post("/familia/logro", async (c) => {
   await giveAchievementFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
   return c.redirect("/familia/recompensas");
+});
+app.get("/familia/ajustes", async (c) => c.html(await renderAjustesPage(c.env)));
+app.post("/familia/ajustes", async (c) => {
+  await setAjustesFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/ajustes");
 });
 app.post("/familia/actividad", async (c) => {
   await addActivityFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
