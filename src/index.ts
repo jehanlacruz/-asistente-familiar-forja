@@ -44,6 +44,7 @@ import {
   renderEditTransactionPage,
   currencySymbol,
   setBudgetFromForm,
+  deleteBudget,
   setFundFromForm,
   deleteFund,
   reorderFundsFromForm,
@@ -748,6 +749,10 @@ app.post("/familia/transaccion/:id", async (c) => {
 app.post("/familia/presupuesto", async (c) => {
   await setBudgetFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
   return c.redirect("/familia/finanzas");
+});
+app.post("/familia/presupuesto/:category/borrar", async (c) => {
+  await deleteBudget(c.env, decodeURIComponent(c.req.param("category")));
+  return c.body(null, 204);
 });
 app.post("/familia/fondo", async (c) => {
   await setFundFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);

@@ -423,6 +423,10 @@ export async function setBudgetFromForm(env: Env, form: Record<string, string>):
   );
 }
 
+export async function deleteBudget(env: Env, category: string): Promise<void> {
+  await db(env).run("DELETE FROM budgets WHERE category = ?", [category]);
+}
+
 export async function setFundFromForm(env: Env, form: Record<string, string>): Promise<void> {
   const nombre = (form.nombre || "").trim();
   const tipo = form.tipo === "fijo" || form.tipo === "ahorro" ? form.tipo : "porcentaje";
@@ -1241,8 +1245,15 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
     const spent = byCategory.get(b.category) ?? 0;
     const pct = Math.min(100, Math.round((spent / b.monthly_limit) * 100));
     const over = spent > b.monthly_limit;
-    return `<div class="budget-row">
-      <div class="budget-head"><b>${esc(b.category)}</b><span class="${over ? "over" : ""}">${spent.toFixed(2)}${cur} / ${b.monthly_limit.toFixed(2)}${cur}</span></div>
+    return `<div class="budget-row edit-budget" data-edit-categoria="${esc(b.category)}" data-edit-limite="${b.monthly_limit}">
+      <div class="budget-head">
+        <b>${esc(b.category)}</b>
+        <span class="row-right">
+          <span class="${over ? "over" : ""}">${spent.toFixed(2)}${cur} / ${b.monthly_limit.toFixed(2)}${cur}</span>
+          <button type="button" class="link-btn edit-budget-btn" title="Editar" style="margin-top:0;">✏️</button>
+          <button class="del" data-del="/familia/presupuesto/${encodeURIComponent(b.category)}/borrar" title="Borrar">✕</button>
+        </span>
+      </div>
       <div class="budget-bar"><div class="budget-fill ${over ? "over" : ""}" style="width:${pct}%"></div></div>
     </div>`;
   };
@@ -1384,11 +1395,11 @@ export async function renderFinanzasPage(env: Env, viewer: FamilyMember | null):
     </section>
     <section class="panel">
       <h2><span class="icon-badge tone-blue">🎯</span>Presupuestos simples</h2>
-      ${budgets.length ? budgets.map(budgetRow).join("") : `<p class="empty-row">Sin presupuestos definidos todavía.</p>`}
-      <form class="add-form" method="post" action="/familia/presupuesto">
+      <div id="budgetsList">${budgets.length ? budgets.map(budgetRow).join("") : `<p class="empty-row">Sin presupuestos definidos todavía.</p>`}</div>
+      <form class="add-form" method="post" action="/familia/presupuesto" id="budgetForm">
         <input type="text" name="categoria" placeholder="Categoría (o 'Total')" required>
         <input type="number" step="0.01" name="montoMensual" placeholder="Límite mensual" required>
-        <button type="submit">Guardar presupuesto</button>
+        <div class="btn-row"><button type="submit" id="budgetFormSubmit">Guardar presupuesto</button></div>
       </form>
     </section>
     <section class="panel">
@@ -1433,11 +1444,12 @@ export async function renderCreditosPage(env: Env, query: Record<string, string>
 
   const debtRow = (dd: Debt) => {
     const payoff = loanPayoff(dd.balance, dd.annual_rate, dd.monthly_payment);
-    return `<div class="budget-row">
+    return `<div class="budget-row edit-debt" data-edit-nombre="${esc(dd.name)}" data-edit-saldo="${dd.balance}" data-edit-tasa="${dd.annual_rate ?? ""}" data-edit-pago="${dd.monthly_payment}">
       <div class="budget-head">
         <b>${esc(dd.name)} <span class="meta">(${dd.annual_rate != null ? `${dd.annual_rate}% anual` : "sin tasa"})</span></b>
         <span class="row-right">
           <span>${dd.balance.toFixed(2)}${cur} · pago ${dd.monthly_payment.toFixed(2)}${cur}/mes</span>
+          <button type="button" class="link-btn edit-debt-btn" title="Editar" style="margin-top:0;">✏️</button>
           <button class="del" data-del="/familia/deuda/${dd.id}/borrar" title="Borrar">✕</button>
         </span>
       </div>
@@ -1476,13 +1488,13 @@ export async function renderCreditosPage(env: Env, query: Record<string, string>
   const body = `
     <section class="panel">
       <h2><span class="icon-badge tone-cyan">💳</span>Créditos y préstamos</h2>
-      ${debtsHtml}
-      <form class="add-form" method="post" action="/familia/deuda">
+      <div id="debtsList">${debtsHtml}</div>
+      <form class="add-form" method="post" action="/familia/deuda" id="debtForm">
         <input type="text" name="nombre" placeholder="Nombre (ej. Tarjeta)" required>
         <input type="number" step="0.01" name="saldo" placeholder="Saldo actual" required>
         <input type="number" step="0.01" name="tasaAnual" placeholder="Tasa anual % (opcional)">
         <input type="number" step="0.01" name="pagoMensual" placeholder="Pago mensual" required>
-        <button type="submit">+ Guardar</button>
+        <div class="btn-row"><button type="submit" id="debtFormSubmit">+ Guardar</button></div>
       </form>
     </section>
     ${
@@ -2036,6 +2048,30 @@ document.querySelectorAll('[data-del]').forEach(function (el) {
     });
   });
 })();
+function setupQuickEdit(listId, btnClass, rowSelector, formId, submitId, fieldMap) {
+  var list = document.getElementById(listId);
+  var form = document.getElementById(formId);
+  var submitBtn = document.getElementById(submitId);
+  if (!list || !form) return;
+  list.querySelectorAll('.' + btnClass).forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var row = btn.closest(rowSelector);
+      if (!row) return;
+      Object.keys(fieldMap).forEach(function (fieldName) {
+        var el = form.elements.namedItem(fieldName);
+        if (!el) return;
+        var val = row.dataset[fieldMap[fieldName]] || '';
+        if (el.type === 'checkbox') el.checked = val === '1'; else el.value = val;
+      });
+      if (submitBtn) submitBtn.textContent = 'Guardar cambios';
+      form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      var first = form.elements[0];
+      if (first) first.focus();
+    });
+  });
+}
+setupQuickEdit('budgetsList', 'edit-budget-btn', '.edit-budget', 'budgetForm', 'budgetFormSubmit', { categoria: 'editCategoria', montoMensual: 'editLimite' });
+setupQuickEdit('debtsList', 'edit-debt-btn', '.edit-debt', 'debtForm', 'debtFormSubmit', { nombre: 'editNombre', saldo: 'editSaldo', tasaAnual: 'editTasa', pagoMensual: 'editPago' });
 var moreBtn = document.getElementById('moreBtn');
 var moreSheet = document.getElementById('moreSheet');
 if (moreBtn && moreSheet) {
