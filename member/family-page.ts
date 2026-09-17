@@ -1163,33 +1163,37 @@ export async function renderMenuPage(env: Env): Promise<string> {
     </div>`;
   };
 
-  const pantryRow = (p: PantryItem) => `<li>
-    <span class="txt">${esc(p.name)}${p.quantity ? ` <span class="meta">· ${esc(p.quantity)}</span>` : ""}</span>
-    <span class="row-right">
-      ${p.category ? `<span class="meta">${esc(p.category)}</span>` : ""}
-      <button class="del" data-del="/familia/despensa/${p.id}/borrar" title="Borrar">✕</button>
-    </span>
-  </li>`;
+  const CHIP_TONES = ["green", "amber", "rose", "blue", "violet", "yellow", "cyan", "coral", "orange", "red"];
+  const chipTone = (key: string) => CHIP_TONES[Math.abs([...key].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7)) % CHIP_TONES.length];
+
+  const pantryChip = (p: PantryItem) => `<span class="pantry-chip tone-${chipTone(p.category || p.name)}">
+    <span class="pantry-chip-dot"></span>
+    ${esc(p.name)}${p.quantity ? ` <span class="pantry-chip-qty">${esc(p.quantity)}</span>` : ""}
+    <button class="pantry-chip-x" data-del="/familia/despensa/${p.id}/borrar" title="Quitar">✕</button>
+  </span>`;
 
   const suggestionCard = suggestion
     ? `<div class="cook-tonight-card">
-        <div class="cook-tonight-head">
-          <span class="cook-tonight-eyebrow">🍳 Cocinar esta noche · con lo que ya tienen</span>
-          <h3>${esc(suggestion.title)}</h3>
+        <div class="cook-tonight-top">
+          <div class="cook-tonight-bot"><span class="cook-tonight-bot-icon">🍳</span><div><span class="cook-tonight-bot-label">KinBot · Receta con tu despensa</span><span class="cook-tonight-bot-sub">Coincidencia con lo que ya tienen</span></div></div>
+          <span class="badge ok">Con lo que ya tienes</span>
         </div>
+        <h3>${esc(suggestion.title)}</h3>
         <p class="cook-tonight-desc">${esc(suggestion.description)}</p>
         <div class="cook-tonight-meta">
-          ${suggestion.minutes ? `<span>⏱ ${suggestion.minutes} min</span>` : ""}
-          ${suggestion.servings ? `<span>🍽 ${suggestion.servings} porciones</span>` : ""}
-          ${suggestion.diet_note ? `<span class="badge ok">${esc(suggestion.diet_note)}</span>` : ""}
+          ${suggestion.minutes ? `<span class="cook-tonight-pill">⏱ ${suggestion.minutes} min</span>` : ""}
+          ${suggestion.servings ? `<span class="cook-tonight-pill">🍽 ${suggestion.servings} porciones</span>` : ""}
+          ${suggestion.diet_note ? `<span class="cook-tonight-pill cook-tonight-pill-diet">✅ ${esc(suggestion.diet_note)}</span>` : ""}
         </div>
         <form method="post" action="/familia/menu/usar-sugerencia">
           <input type="hidden" name="id" value="${suggestion.id}">
-          <button type="submit" class="cook-tonight-btn">Usar como cena de hoy</button>
+          <button type="submit" class="cook-tonight-btn">🍳 Cocinar esto hoy</button>
         </form>
       </div>`
     : `<div class="cook-tonight-card cook-tonight-empty">
-        <span class="cook-tonight-eyebrow">🍳 Cocinar esta noche</span>
+        <div class="cook-tonight-top">
+          <div class="cook-tonight-bot"><span class="cook-tonight-bot-icon">🍳</span><div><span class="cook-tonight-bot-label">KinBot · Cocinar esta noche</span><span class="cook-tonight-bot-sub">Con lo que ya tienen en casa</span></div></div>
+        </div>
         <p class="cook-tonight-desc">Pídele al bot: "¿qué puedo cocinar con lo que tengo en la despensa?" — arma una receta con lo que ya está en casa y aparece aquí.</p>
       </div>`;
 
@@ -1197,7 +1201,7 @@ export async function renderMenuPage(env: Env): Promise<string> {
     ${suggestionCard}
     <section class="panel">
       <h2><span class="icon-badge tone-coral">🧺</span>Despensa — lo que ya tenemos</h2>
-      <ul class="chores">${pantry.length ? pantry.map(pantryRow).join("") : `<li class="empty-row">Vacía — agrega lo que ya tengan en casa para que el menú y la compra no lo dupliquen.</li>`}</ul>
+      ${pantry.length ? `<p class="pantry-label">EN LA DESPENSA (${pantry.length})</p><div class="pantry-chips">${pantry.map(pantryChip).join("")}</div>` : `<p class="empty-row">Vacía — agrega lo que ya tengan en casa para que el menú y la compra no lo dupliquen.</p>`}
       <form class="add-form" method="post" action="/familia/despensa">
         <input type="text" name="nombre" placeholder="Producto (ej. Leche)" required>
         <input type="text" name="cantidad" placeholder="Cantidad (ej. 1 litro)">
@@ -1894,20 +1898,24 @@ const SHARED_STYLE = `
     .nav-ic, .brand-badge { background:#1c2b28 !important; }
     .hub-card:hover { box-shadow:0 10px 28px rgba(0,0,0,.4) !important; }
     .hero-eyebrow { color:#9aa0b4 !important; }
-    .hub-icon.tone-green, .icon-badge.tone-green { background:#123524 !important; color:#4ade80 !important; }
-    .hub-icon.tone-amber, .icon-badge.tone-amber { background:#3a2a0a !important; color:#fbbf24 !important; }
-    .hub-icon.tone-rose, .icon-badge.tone-rose { background:#3a1626 !important; color:#f472b6 !important; }
-    .hub-icon.tone-orange, .icon-badge.tone-orange { background:#3a1f0a !important; color:#fb923c !important; }
-    .hub-icon.tone-red, .icon-badge.tone-red { background:#3a1414 !important; color:#f87171 !important; }
-    .hub-icon.tone-blue, .icon-badge.tone-blue { background:#122a4a !important; color:#60a5fa !important; }
-    .hub-icon.tone-yellow, .icon-badge.tone-yellow { background:#3a330a !important; color:#fde047 !important; }
-    .hub-icon.tone-violet, .icon-badge.tone-violet { background:#241a3a !important; color:#c4b5fd !important; }
-    .hub-icon.tone-cyan, .icon-badge.tone-cyan { background:#0b2e36 !important; color:#22d3ee !important; }
-    .hub-icon.tone-coral, .icon-badge.tone-coral { background:#3a1f16 !important; color:#ff8a68 !important; }
+    .hub-icon.tone-green, .icon-badge.tone-green, .pantry-chip.tone-green { background:#123524 !important; color:#4ade80 !important; }
+    .hub-icon.tone-amber, .icon-badge.tone-amber, .pantry-chip.tone-amber { background:#3a2a0a !important; color:#fbbf24 !important; }
+    .hub-icon.tone-rose, .icon-badge.tone-rose, .pantry-chip.tone-rose { background:#3a1626 !important; color:#f472b6 !important; }
+    .hub-icon.tone-orange, .icon-badge.tone-orange, .pantry-chip.tone-orange { background:#3a1f0a !important; color:#fb923c !important; }
+    .hub-icon.tone-red, .icon-badge.tone-red, .pantry-chip.tone-red { background:#3a1414 !important; color:#f87171 !important; }
+    .hub-icon.tone-blue, .icon-badge.tone-blue, .pantry-chip.tone-blue { background:#122a4a !important; color:#60a5fa !important; }
+    .hub-icon.tone-yellow, .icon-badge.tone-yellow, .pantry-chip.tone-yellow { background:#3a330a !important; color:#fde047 !important; }
+    .hub-icon.tone-violet, .icon-badge.tone-violet, .pantry-chip.tone-violet { background:#241a3a !important; color:#c4b5fd !important; }
+    .hub-icon.tone-cyan, .icon-badge.tone-cyan, .pantry-chip.tone-cyan { background:#0b2e36 !important; color:#22d3ee !important; }
+    .hub-icon.tone-coral, .icon-badge.tone-coral, .pantry-chip.tone-coral { background:#3a1f16 !important; color:#ff8a68 !important; }
+    .pantry-chip-dot { background:currentColor !important; }
     .cook-tonight-card { background:linear-gradient(135deg,#2a1610,#1f1410) !important; border-color:#4a2a1a !important; }
-    .cook-tonight-eyebrow { color:#ffb499 !important; }
+    .cook-tonight-bot-label { color:#ffcbb0 !important; }
+    .cook-tonight-bot-sub { color:#c99b85 !important; }
+    .cook-tonight-card h3 { color:#fff2ec !important; }
     .cook-tonight-desc { color:#e8c9ba !important; }
-    .cook-tonight-meta span:not(.badge) { color:#e8c9ba !important; }
+    .cook-tonight-pill { background:#3a1f16 !important; color:#ffcbb0 !important; }
+    .pantry-label { color:#9a5c40 !important; }
   }
   .brand { display:inline-flex; align-items:center; gap:12px; }
   .brand-badge { display:flex; align-items:center; justify-content:center; width:46px; height:46px; border-radius:14px; background:var(--accent-tint); font-size:1.4rem; flex:none; }
@@ -1951,30 +1959,46 @@ const SHARED_STYLE = `
   .hub-card:hover { transform:translateY(-3px); box-shadow:var(--shadow-md); }
   .hub-icon { display:flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:12px; background:var(--accent-tint); font-size:1.3rem; margin-bottom:10px; transition:transform .15s ease; }
   .hub-card:hover .hub-icon { transform:scale(1.08) rotate(-4deg); }
-  .hub-icon.tone-green, .icon-badge.tone-green { background:#dcfce7; color:#16a34a; }
-  .hub-icon.tone-amber, .icon-badge.tone-amber { background:#fef3c7; color:#b45309; }
-  .hub-icon.tone-rose, .icon-badge.tone-rose { background:#fce7f3; color:#be185d; }
-  .hub-icon.tone-orange, .icon-badge.tone-orange { background:#ffedd5; color:#c2410c; }
-  .hub-icon.tone-red, .icon-badge.tone-red { background:#fee2e2; color:#b91c1c; }
-  .hub-icon.tone-blue, .icon-badge.tone-blue { background:#dbeafe; color:#1d4ed8; }
-  .hub-icon.tone-yellow, .icon-badge.tone-yellow { background:#fef9c3; color:#a16207; }
-  .hub-icon.tone-violet, .icon-badge.tone-violet { background:#ede9fe; color:#6d28d9; }
-  .hub-icon.tone-cyan, .icon-badge.tone-cyan { background:#cffafe; color:#0e7490; }
-  .hub-icon.tone-coral, .icon-badge.tone-coral { background:#ffe4da; color:#c2410c; }
+  .hub-icon.tone-green, .icon-badge.tone-green, .pantry-chip.tone-green { background:#dcfce7; color:#16a34a; }
+  .hub-icon.tone-amber, .icon-badge.tone-amber, .pantry-chip.tone-amber { background:#fef3c7; color:#b45309; }
+  .hub-icon.tone-rose, .icon-badge.tone-rose, .pantry-chip.tone-rose { background:#fce7f3; color:#be185d; }
+  .hub-icon.tone-orange, .icon-badge.tone-orange, .pantry-chip.tone-orange { background:#ffedd5; color:#c2410c; }
+  .hub-icon.tone-red, .icon-badge.tone-red, .pantry-chip.tone-red { background:#fee2e2; color:#b91c1c; }
+  .hub-icon.tone-blue, .icon-badge.tone-blue, .pantry-chip.tone-blue { background:#dbeafe; color:#1d4ed8; }
+  .hub-icon.tone-yellow, .icon-badge.tone-yellow, .pantry-chip.tone-yellow { background:#fef9c3; color:#a16207; }
+  .hub-icon.tone-violet, .icon-badge.tone-violet, .pantry-chip.tone-violet { background:#ede9fe; color:#6d28d9; }
+  .hub-icon.tone-cyan, .icon-badge.tone-cyan, .pantry-chip.tone-cyan { background:#cffafe; color:#0e7490; }
+  .hub-icon.tone-coral, .icon-badge.tone-coral, .pantry-chip.tone-coral { background:#ffe4da; color:#c2410c; }
   .icon-badge { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:9px; font-size:.95rem; margin-right:8px; flex:none; }
 
   /* "Cocinar esta noche" — tarjeta destacada, distinta del resto (inspirada
-     en el estilo cálido de Kinfolk/Stitch: gradiente coral, no plana). */
+     en el estilo cálido de Kinfolk/Stitch: gradiente coral, insignia de bot,
+     píldoras de datos, no una tarjeta plana más). */
   .cook-tonight-card { background:linear-gradient(135deg,#fff4ef,#ffe8dd); border:1px solid #ffd4c2; border-radius:var(--radius-lg); padding:20px; margin-bottom:16px; box-shadow:var(--shadow-md); }
-  .cook-tonight-head { margin-bottom:6px; }
-  .cook-tonight-eyebrow { display:block; font-size:.72rem; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:#c2410c; margin-bottom:4px; }
-  .cook-tonight-card h3 { margin:0; font-size:1.3rem; color:var(--ink); }
-  .cook-tonight-desc { margin:8px 0 12px; font-size:.9rem; line-height:1.5; color:#7c4a35; }
-  .cook-tonight-meta { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; font-size:.82rem; color:#9a5c40; font-weight:600; }
-  .cook-tonight-btn { border:none; background:#ff6b4a; color:#fff; font-weight:700; border-radius:var(--radius-sm); padding:11px 20px; font-size:.9rem; cursor:pointer; transition:background .15s ease, transform .1s ease; }
+  .cook-tonight-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  .cook-tonight-bot { display:flex; align-items:center; gap:10px; }
+  .cook-tonight-bot-icon { display:flex; align-items:center; justify-content:center; width:38px; height:38px; border-radius:50%; background:#ff6b4a; font-size:1.15rem; flex:none; box-shadow:0 2px 8px rgba(255,107,74,.4); }
+  .cook-tonight-bot-label { display:block; font-size:.78rem; font-weight:700; color:#c2410c; }
+  .cook-tonight-bot-sub { display:block; font-size:.7rem; color:#a8674f; }
+  .cook-tonight-card h3 { margin:0 0 8px; font-size:1.4rem; letter-spacing:-.01em; color:var(--ink); }
+  .cook-tonight-desc { margin:0 0 14px; font-size:.9rem; line-height:1.5; color:#7c4a35; }
+  .cook-tonight-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:16px; }
+  .cook-tonight-pill { display:inline-flex; align-items:center; background:#fff; border:1px solid #ffd4c2; border-radius:999px; padding:5px 12px; font-size:.78rem; font-weight:600; color:#9a5c40; }
+  .cook-tonight-pill-diet { background:#dcfce7; border-color:#bbf7d0; color:#15803d; }
+  .cook-tonight-btn { display:block; width:100%; border:none; background:#ff6b4a; color:#fff; font-weight:700; border-radius:var(--radius-sm); padding:13px 20px; font-size:.95rem; cursor:pointer; transition:background .15s ease, transform .1s ease; }
   .cook-tonight-btn:hover { background:#e5502f; }
   .cook-tonight-btn:active { transform:scale(.98); }
-  .cook-tonight-empty .cook-tonight-desc { margin-top:8px; margin-bottom:0; }
+  .cook-tonight-empty .cook-tonight-desc { margin-top:4px; margin-bottom:0; }
+
+  /* Despensa: chips de colores (como los ingredientes detectados de la
+     referencia), no una lista plana. */
+  .pantry-label { font-size:.72rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:#9aa0b4; margin:0 0 10px; }
+  .pantry-chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+  .pantry-chip { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:7px 8px 7px 12px; font-size:.85rem; font-weight:600; }
+  .pantry-chip-dot { width:7px; height:7px; border-radius:50%; background:currentColor; flex:none; }
+  .pantry-chip-qty { font-weight:500; opacity:.75; font-size:.8em; }
+  .pantry-chip-x { border:none; background:rgba(0,0,0,.08); color:inherit; width:18px; height:18px; border-radius:50%; font-size:.65rem; line-height:1; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex:none; }
+  .pantry-chip-x:hover { background:rgba(0,0,0,.18); }
   .hub-card h3 { margin:0 0 4px; font-size:1rem; }
   .hub-card p { margin:0; font-size:.82rem; color:var(--ink-soft); }
   .hub-card.soon { opacity:.7; }
