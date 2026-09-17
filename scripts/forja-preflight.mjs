@@ -16,8 +16,11 @@ try {
 }
 
 // Ignora comentarios (#…): un {{ dentro de un comentario no rompe el deploy.
+// Normaliza CRLF -> LF primero: si no, la \r sobrante al final de cada línea
+// hace que /#.*$/ nunca matchee (. no matchea \r, y $ sin flag /m exige el
+// final real del string), así que el comentario queda sin recortar.
 const pending = new Set();
-for (const line of toml.split("\n")) {
+for (const line of toml.replace(/\r\n/g, "\n").split("\n")) {
   const code = line.replace(/#.*$/, "");
   for (const m of code.matchAll(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g)) pending.add(m[1]);
 }

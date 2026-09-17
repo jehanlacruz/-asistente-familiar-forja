@@ -401,7 +401,11 @@ export class SupportAgent extends Agent<Env, SupportAgentState> {
       try {
         const { transcribeAudio } = await import("./media/transcribe");
         const result = await transcribeAudio(payload.audioUrl, this.env);
-        processedText = result.text || "(audio sin transcripción)";
+        // [NOTA_DE_VOZ] no es un marcador interno (no lo limpia media-markers.ts):
+        // llega tal cual al modelo para que sepa que este texto vino de una
+        // transcripción y confirme lo que entendió antes de actuar — sin esto,
+        // el texto transcrito le llegaba idéntico a uno escrito a mano.
+        processedText = result.text ? `[NOTA_DE_VOZ] ${result.text}` : "(audio sin transcripción)";
       } catch (e) {
         console.error("[ingest] transcription failed:", e);
         processedText = "(no pude entender el audio)";
