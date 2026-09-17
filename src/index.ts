@@ -80,6 +80,9 @@ import {
   deleteMember,
   revokeMemberAccess,
   saveTodayMenuFromForm,
+  addPantryItemFromForm,
+  deletePantryItem,
+  useSuggestionAsDinner,
   createWebInvite,
   consumeWebInvite,
   findFamilySessionMember,
@@ -857,6 +860,19 @@ app.post("/familia/compra", async (c) => {
 app.post("/familia/menu", async (c) => {
   await saveTodayMenuFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
   return c.redirect(c.req.header("Referer") || "/familia/menu");
+});
+app.post("/familia/menu/usar-sugerencia", async (c) => {
+  const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+  await useSuggestionAsDinner(c.env, form.id);
+  return c.redirect("/familia/menu");
+});
+app.post("/familia/despensa", async (c) => {
+  await addPantryItemFromForm(c.env, Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>);
+  return c.redirect("/familia/menu");
+});
+app.post("/familia/despensa/:id/borrar", async (c) => {
+  await deletePantryItem(c.env, c.req.param("id"));
+  return c.body(null, 204);
 });
 app.get("/familia/integrante/:id/editar", async (c) => c.html(await renderEditMemberPage(c.env, c.req.param("id"))));
 app.post("/familia/integrante", async (c) => {

@@ -43,6 +43,8 @@ import {
   type Reward,
   type RewardRedemption,
   type AchievementEarned,
+  type PantryItem,
+  type PantrySuggestion,
 } from "./family-lib";
 import type { Env } from "../src/env";
 import { ICON_192_BASE64, ICON_512_BASE64 } from "./pwa-assets";
@@ -682,6 +684,41 @@ export async function saveTodayMenuFromForm(env: Env, form: Record<string, strin
   }
 }
 
+// ── Despensa y sugerencia "Cocinar esta noche" ───────────────────────────
+
+export async function addPantryItemFromForm(env: Env, form: Record<string, string>): Promise<void> {
+  const nombre = (form.nombre || "").trim();
+  if (!nombre) return;
+  const d = db(env);
+  const now = Date.now();
+  await d.run(
+    `INSERT INTO pantry_items (id, name, quantity, category, added_by, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET quantity = excluded.quantity, category = excluded.category, updated_at = excluded.updated_at`,
+    [newId(), nombre, form.cantidad || null, form.categoria || null, now, now],
+  );
+}
+
+export async function deletePantryItem(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM pantry_items WHERE id = ?", [id]);
+}
+
+export async function useSuggestionAsDinner(env: Env, suggestionId: string): Promise<void> {
+  const d = db(env);
+  const s = await d.first<PantrySuggestion>("SELECT * FROM pantry_suggestions WHERE id = ?", [suggestionId]);
+  if (!s) return;
+  const date = todayInTZ(env);
+  const now = Date.now();
+  const existing = await d.first<{ date: string }>("SELECT date FROM meal_plan WHERE date = ?", [date]);
+  if (existing) {
+    await d.run("UPDATE meal_plan SET dinner = ?, dinner_recipe = ?, updated_at = ? WHERE date = ?", [s.title, s.description, now, date]);
+  } else {
+    await d.run(
+      "INSERT INTO meal_plan (date, dinner, dinner_recipe, notes, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)",
+      [date, s.title, s.description, now, now],
+    );
+  }
+}
+
 export async function addReminderFromForm(env: Env, form: Record<string, string>): Promise<void> {
   const titulo = (form.titulo || "").trim();
   if (!titulo || !form.fecha || !form.hora) return;
@@ -1105,6 +1142,8 @@ export async function renderMenuPage(env: Env): Promise<string> {
     "SELECT breakfast, lunch, dinner FROM meal_plan WHERE date = ?",
     [today],
   );
+  const suggestion = await d.first<PantrySuggestion>("SELECT * FROM pantry_suggestions ORDER BY created_at DESC LIMIT 1");
+  const pantry = await d.all<PantryItem>("SELECT * FROM pantry_items ORDER BY category ASC, name ASC");
 
   type MealRow = { date: string; breakfast: string | null; breakfast_recipe: string | null; lunch: string | null; lunch_recipe: string | null; dinner: string | null; dinner_recipe: string | null };
   const weekDates = Array.from({ length: 7 }, (_, i) => addDaysStr(today, i));
@@ -1124,7 +1163,48 @@ export async function renderMenuPage(env: Env): Promise<string> {
     </div>`;
   };
 
+  const pantryRow = (p: PantryItem) => `<li>
+    <span class="txt">${esc(p.name)}${p.quantity ? ` <span class="meta">· ${esc(p.quantity)}</span>` : ""}</span>
+    <span class="row-right">
+      ${p.category ? `<span class="meta">${esc(p.category)}</span>` : ""}
+      <button class="del" data-del="/familia/despensa/${p.id}/borrar" title="Borrar">✕</button>
+    </span>
+  </li>`;
+
+  const suggestionCard = suggestion
+    ? `<div class="cook-tonight-card">
+        <div class="cook-tonight-head">
+          <span class="cook-tonight-eyebrow">🍳 Cocinar esta noche · con lo que ya tienen</span>
+          <h3>${esc(suggestion.title)}</h3>
+        </div>
+        <p class="cook-tonight-desc">${esc(suggestion.description)}</p>
+        <div class="cook-tonight-meta">
+          ${suggestion.minutes ? `<span>⏱ ${suggestion.minutes} min</span>` : ""}
+          ${suggestion.servings ? `<span>🍽 ${suggestion.servings} porciones</span>` : ""}
+          ${suggestion.diet_note ? `<span class="badge ok">${esc(suggestion.diet_note)}</span>` : ""}
+        </div>
+        <form method="post" action="/familia/menu/usar-sugerencia">
+          <input type="hidden" name="id" value="${suggestion.id}">
+          <button type="submit" class="cook-tonight-btn">Usar como cena de hoy</button>
+        </form>
+      </div>`
+    : `<div class="cook-tonight-card cook-tonight-empty">
+        <span class="cook-tonight-eyebrow">🍳 Cocinar esta noche</span>
+        <p class="cook-tonight-desc">Pídele al bot: "¿qué puedo cocinar con lo que tengo en la despensa?" — arma una receta con lo que ya está en casa y aparece aquí.</p>
+      </div>`;
+
   const body = `
+    ${suggestionCard}
+    <section class="panel">
+      <h2><span class="icon-badge tone-coral">🧺</span>Despensa — lo que ya tenemos</h2>
+      <ul class="chores">${pantry.length ? pantry.map(pantryRow).join("") : `<li class="empty-row">Vacía — agrega lo que ya tengan en casa para que el menú y la compra no lo dupliquen.</li>`}</ul>
+      <form class="add-form" method="post" action="/familia/despensa">
+        <input type="text" name="nombre" placeholder="Producto (ej. Leche)" required>
+        <input type="text" name="cantidad" placeholder="Cantidad (ej. 1 litro)">
+        <input type="text" name="categoria" placeholder="Categoría (opcional)">
+        <button type="submit">+ Agregar</button>
+      </form>
+    </section>
     <section class="panel">
       <h2><span class="icon-badge tone-rose">✏️</span>Editar menú de hoy (rápido)</h2>
       <form class="menu-form" method="post" action="/familia/menu">
@@ -1823,6 +1903,11 @@ const SHARED_STYLE = `
     .hub-icon.tone-yellow, .icon-badge.tone-yellow { background:#3a330a !important; color:#fde047 !important; }
     .hub-icon.tone-violet, .icon-badge.tone-violet { background:#241a3a !important; color:#c4b5fd !important; }
     .hub-icon.tone-cyan, .icon-badge.tone-cyan { background:#0b2e36 !important; color:#22d3ee !important; }
+    .hub-icon.tone-coral, .icon-badge.tone-coral { background:#3a1f16 !important; color:#ff8a68 !important; }
+    .cook-tonight-card { background:linear-gradient(135deg,#2a1610,#1f1410) !important; border-color:#4a2a1a !important; }
+    .cook-tonight-eyebrow { color:#ffb499 !important; }
+    .cook-tonight-desc { color:#e8c9ba !important; }
+    .cook-tonight-meta span:not(.badge) { color:#e8c9ba !important; }
   }
   .brand { display:inline-flex; align-items:center; gap:12px; }
   .brand-badge { display:flex; align-items:center; justify-content:center; width:46px; height:46px; border-radius:14px; background:var(--accent-tint); font-size:1.4rem; flex:none; }
@@ -1875,7 +1960,21 @@ const SHARED_STYLE = `
   .hub-icon.tone-yellow, .icon-badge.tone-yellow { background:#fef9c3; color:#a16207; }
   .hub-icon.tone-violet, .icon-badge.tone-violet { background:#ede9fe; color:#6d28d9; }
   .hub-icon.tone-cyan, .icon-badge.tone-cyan { background:#cffafe; color:#0e7490; }
+  .hub-icon.tone-coral, .icon-badge.tone-coral { background:#ffe4da; color:#c2410c; }
   .icon-badge { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:9px; font-size:.95rem; margin-right:8px; flex:none; }
+
+  /* "Cocinar esta noche" — tarjeta destacada, distinta del resto (inspirada
+     en el estilo cálido de Kinfolk/Stitch: gradiente coral, no plana). */
+  .cook-tonight-card { background:linear-gradient(135deg,#fff4ef,#ffe8dd); border:1px solid #ffd4c2; border-radius:var(--radius-lg); padding:20px; margin-bottom:16px; box-shadow:var(--shadow-md); }
+  .cook-tonight-head { margin-bottom:6px; }
+  .cook-tonight-eyebrow { display:block; font-size:.72rem; font-weight:700; letter-spacing:.03em; text-transform:uppercase; color:#c2410c; margin-bottom:4px; }
+  .cook-tonight-card h3 { margin:0; font-size:1.3rem; color:var(--ink); }
+  .cook-tonight-desc { margin:8px 0 12px; font-size:.9rem; line-height:1.5; color:#7c4a35; }
+  .cook-tonight-meta { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; font-size:.82rem; color:#9a5c40; font-weight:600; }
+  .cook-tonight-btn { border:none; background:#ff6b4a; color:#fff; font-weight:700; border-radius:var(--radius-sm); padding:11px 20px; font-size:.9rem; cursor:pointer; transition:background .15s ease, transform .1s ease; }
+  .cook-tonight-btn:hover { background:#e5502f; }
+  .cook-tonight-btn:active { transform:scale(.98); }
+  .cook-tonight-empty .cook-tonight-desc { margin-top:8px; margin-bottom:0; }
   .hub-card h3 { margin:0 0 4px; font-size:1rem; }
   .hub-card p { margin:0; font-size:.82rem; color:var(--ink-soft); }
   .hub-card.soon { opacity:.7; }

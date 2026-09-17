@@ -598,6 +598,89 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     },
   });
 
+  // ── Despensa: lo que la familia YA tiene en casa ───────────────────────
+
+  const upsertPantryItem = async (nombre: string, cantidad: string | null, categoria: string | null, senderId: string | null): Promise<void> => {
+    const now = Date.now();
+    await d.run(
+      `INSERT INTO pantry_items (id, name, quantity, category, added_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET quantity = excluded.quantity, category = excluded.category, updated_at = excluded.updated_at`,
+      [newId(), nombre, cantidad, categoria, senderId, now, now],
+    );
+  };
+
+  const agregarADespensa = tool({
+    description:
+      "Agrega o actualiza UN producto en la despensa (lo que la familia YA tiene en casa) — distinto de la lista de compra (lo que falta). Úsalo cuando digan 'tenemos...', 'nos quedó...', 'compramos...', o después de marcar la compra como hecha.",
+    inputSchema: z.object({
+      nombre: z.string(),
+      cantidad: z.string().optional().describe("ej. '1.5 kg', 'medio cartón', '3 latas'"),
+      categoria: z.string().optional(),
+    }),
+    execute: async ({ nombre, cantidad, categoria }) => {
+      const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const sender = senderChatId ? await findMemberByChatId(d, senderChatId) : null;
+      await upsertPantryItem(nombre, cantidad ?? null, categoria ?? null, sender?.id ?? null);
+      return { ok: true, mensaje: `"${nombre}"${cantidad ? ` (${cantidad})` : ""} guardado en la despensa.` };
+    },
+  });
+
+  const agregarVariosADespensa = tool({
+    description: "Agrega o actualiza VARIOS productos de la despensa en una sola llamada — úsala cuando te digan varias cosas que ya tienen de un jalón, en vez de llamar agregarADespensa varias veces seguidas.",
+    inputSchema: z.object({
+      productos: z.array(z.object({ nombre: z.string(), cantidad: z.string().optional(), categoria: z.string().optional() })).min(1),
+    }),
+    execute: async ({ productos }) => {
+      const senderChatId = await getSenderChannelUserId(d, ctx.getConversationId());
+      const sender = senderChatId ? await findMemberByChatId(d, senderChatId) : null;
+      for (const p of productos) await upsertPantryItem(p.nombre, p.cantidad ?? null, p.categoria ?? null, sender?.id ?? null);
+      return { ok: true, agregados: productos.map((p) => p.nombre) };
+    },
+  });
+
+  const listarDespensa = tool({
+    description:
+      "Lista lo que la familia YA tiene en casa (despensa). Úsala SIEMPRE antes de armar la lista de compras (para no comprar lo que ya tienen) y antes de sugerir qué cocinar con lo disponible.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      const rows = await d.all<{ name: string; quantity: string | null; category: string | null }>(
+        "SELECT name, quantity, category FROM pantry_items ORDER BY category ASC, name ASC",
+      );
+      return { despensa: rows.map((r) => ({ nombre: r.name, cantidad: r.quantity, categoria: r.category })) };
+    },
+  });
+
+  const quitarDeDespensa = tool({
+    description: "Quita un producto de la despensa por nombre (o parte de él) — porque se acabó o se usó todo.",
+    inputSchema: z.object({ nombre: z.string() }),
+    execute: async ({ nombre }) => {
+      const row = await d.first<{ id: string; name: string }>("SELECT id, name FROM pantry_items WHERE name LIKE ? LIMIT 1", [`%${nombre}%`]);
+      if (!row) return { error: `No encontré "${nombre}" en la despensa.` };
+      await d.run("DELETE FROM pantry_items WHERE id = ?", [row.id]);
+      return { ok: true, mensaje: `"${row.name}" quitado de la despensa.` };
+    },
+  });
+
+  const guardarSugerenciaDespensa = tool({
+    description:
+      "Guarda una sugerencia de 'qué cocinar hoy' armada con lo que hay en la despensa (usa listarDespensa primero) — aparece destacada en /familia/menu como 'Cocinar esta noche'. Úsala cuando pregunten 'qué puedo cocinar con lo que tengo' o similar, después de proponer la receta en el chat.",
+    inputSchema: z.object({
+      titulo: z.string().describe("Nombre corto del platillo"),
+      descripcion: z.string().describe("Receta o descripción breve: ingredientes de la despensa que usa y cómo se prepara"),
+      minutos: z.number().int().positive().optional(),
+      porciones: z.number().int().positive().optional(),
+      notaDieta: z.string().optional().describe("ej. 'Apto para Aday (sin picante)' si aplica alguna restricción/preferencia de un integrante"),
+    }),
+    execute: async ({ titulo, descripcion, minutos, porciones, notaDieta }) => {
+      await d.run(
+        "INSERT INTO pantry_suggestions (id, title, description, minutes, servings, diet_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [newId(), titulo, descripcion, minutos ?? null, porciones ?? null, notaDieta ?? null, Date.now()],
+      );
+      return { ok: true, mensaje: `"${titulo}" guardado como sugerencia de esta noche — ya se ve en /familia/menu.` };
+    },
+  });
+
   interface MealDayInput {
     fecha?: string;
     desayuno?: string;
@@ -1572,6 +1655,11 @@ export function familyTools(ctx: MemberToolCtx): Record<string, unknown> {
     agregarVariosProductosCompra,
     listarListaCompra,
     marcarProductoComprado,
+    agregarADespensa,
+    agregarVariosADespensa,
+    listarDespensa,
+    quitarDeDespensa,
+    guardarSugerenciaDespensa,
     definirMenuDia,
     definirMenuSemanal,
     consultarMenuDia,

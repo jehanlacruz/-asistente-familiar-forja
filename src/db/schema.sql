@@ -609,3 +609,31 @@ CREATE TABLE IF NOT EXISTS achievements_earned (
   FOREIGN KEY (member_id) REFERENCES family_members(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_achievements_member ON achievements_earned(member_id);
+
+-- ── Despensa (lo que la familia YA tiene en casa) ─────────────────────────
+-- Distinta de shopping_items (lo que falta comprar). El menú/lista de
+-- compras la consulta antes de calcular cantidades, para no duplicar lo
+-- que ya está en casa y para poder sugerir recetas con lo disponible.
+CREATE TABLE IF NOT EXISTS pantry_items (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  quantity TEXT,
+  category TEXT,
+  added_by TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (added_by) REFERENCES family_members(id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pantry_name ON pantry_items(name);
+
+-- "Cocinar esta noche": sugerencia de receta armada con lo que hay en la
+-- despensa. Solo se guarda la más reciente (se muestra en /familia/menu).
+CREATE TABLE IF NOT EXISTS pantry_suggestions (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  minutes INTEGER,
+  servings INTEGER,
+  diet_note TEXT,
+  created_at INTEGER NOT NULL
+);

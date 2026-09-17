@@ -428,6 +428,28 @@ export async function starBalance(db: Db, memberId: string): Promise<number> {
   return row?.total ?? 0;
 }
 
+// ── Despensa ("lo que ya tenemos en casa") y sugerencia "cocinar hoy" ────
+
+export interface PantryItem {
+  id: string;
+  name: string;
+  quantity: string | null;
+  category: string | null;
+  added_by: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface PantrySuggestion {
+  id: string;
+  title: string;
+  description: string;
+  minutes: number | null;
+  servings: number | null;
+  diet_note: string | null;
+  created_at: number;
+}
+
 export const db = (env: Env) => new Db(env.DB);
 
 /** Lee un valor de la tabla settings (key/value genérica) — null si no está definido. */
